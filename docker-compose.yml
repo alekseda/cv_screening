@@ -1,0 +1,48 @@
+# Local/dev stack: Postgres+pgvector plus the FastAPI app itself. The app
+# needs its own image (see backend/Dockerfile) because Tesseract's
+# Azerbaijani/Russian language packs are a system package, not something
+# `pip install` can provide.
+#
+# You can still run the app directly with `uvicorn app.main:app --reload`
+# on the host if you prefer (e.g. for faster iteration) - just make sure
+# Tesseract + the aze/rus/eng language packs are installed on the host too.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: cvscreen-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cvscreen
+      POSTGRES_PASSWORD: cvscreen
+      POSTGRES_DB: cvscreen
+    ports:
+      - "5433:5432"
+    volumes:
+      - cvscreen_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cvscreen"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    container_name: cvscreen-api
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # Overrides .env's localhost value - inside Docker, "db" is the hostname,
+      # not localhost (localhost inside the api container is the container itself).
+      DATABASE_URL: postgresql+asyncpg://cvscreen:cvscreen@db:5432/cvscreen
+    ports:
+      - "8000:8000"
+    volumes:
+      - cvscreen_resumes:/app/storage/resumes
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  cvscreen_pgdata:
+  cvscreen_resumes:

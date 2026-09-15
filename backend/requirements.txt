@@ -1,0 +1,23 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+asyncpg==0.29.0
+alembic==1.13.2
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-multipart==0.0.9
+pgvector==0.3.4
+email-validator==2.2.0
+
+# Added in later phases (resume parsing / embeddings / AI) but pinned now so the
+# environment doesn't need to change mid-project:
+pymupdf==1.24.11        # PDF text extraction
+python-docx==1.1.2      # DOCX text extraction
+pytesseract==0.3.13     # OCR fallback (requires system tesseract + aze/rus/eng langpacks)
+pillow==10.4.0
+anthropic==0.39.0       # Claude API - resume structuring
+httpx==0.27.2
+voyageai==0.2.3         # Voyage AI - multilingual embeddings
