@@ -98,6 +98,8 @@ class VacancyRead(BaseModel):
     preferred_skills: list[str]
     required_skills_canonical: list[str]  # auto-derived, read-only - see canonicalizer.py
     preferred_skills_canonical: list[str]
+    required_skills_type: list[str]  # "hard"/"soft" per entry, auto-derived, read-only
+    preferred_skills_type: list[str]
     min_experience_years: float
     education_requirement: EducationLevel
     accepts_current_students: bool

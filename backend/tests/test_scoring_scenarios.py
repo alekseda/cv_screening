@@ -29,8 +29,10 @@ def make_vacancy(**overrides):
             "Microsoft Excel proficiency (Pivot tables, core formulas)",
             "Azerbaijani language - fluent",
         ],
+        required_skills_type=["hard", "hard"],
         preferred_skills=["Power BI/Tableau", "SQL"],
         preferred_skills_canonical=["Power BI/Tableau", "SQL"],
+        preferred_skills_type=["hard", "hard"],
         min_experience_years=1.0,
         education_requirement="bachelor",
         accepts_current_students=True,
@@ -167,3 +169,33 @@ show(
     "No embeddings (semantic unavailable)",
     score_candidate(make_candidate(embedding=None), make_vacancy(embedding=None), {}),
 )
+
+# 7. Required soft skill (e.g. "team player") should be excluded from scoring,
+# not counted as missing just because the resume never says "team player".
+result = score_candidate(
+    make_candidate(),
+    make_vacancy(
+        required_skills=[
+            "MS Excel üzrə yaxşı səviyyədə biliklər (Pivot, əsas formulalar)",
+            "Azərbaycan dili - sərbəst",
+            "Strong team player",
+        ],
+        required_skills_canonical=[
+            "Microsoft Excel proficiency (Pivot tables, core formulas)",
+            "Azerbaijani language - fluent",
+            "Strong team player",
+        ],
+        required_skills_type=["hard", "hard", "soft"],
+    ),
+    {0: {"relevance": 1.0, "reason": "Same role"}},
+)
+show("Required soft skill excluded from scoring", result)
+not_scored = result["breakdown"]["required_skills"]["not_scored_here"]
+assert any(
+    e["requirement"] == "Strong team player" and e["reason"] == "Soft skill - excluded from scoring"
+    for e in not_scored
+), f"Expected soft skill to be excluded with the right reason, got: {not_scored}"
+assert "Strong team player" not in result["breakdown"]["required_skills"]["missing"], (
+    "Soft skill should never appear as a missing (i.e. scored-and-failed) requirement"
+)
+print("  OK: soft skill excluded, not penalized")

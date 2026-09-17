@@ -51,6 +51,13 @@ class Vacancy(Base):
     # never user-editable directly.
     required_skills_canonical: Mapped[list[str]] = mapped_column(JSON, default=list)
     preferred_skills_canonical: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # "hard" or "soft" per entry, same order/count as required_skills/preferred_skills
+    # above, auto-derived alongside the canonical forms - see canonicalizer.py.
+    # Soft skills (communication, teamwork, etc.) are excluded from
+    # required_skills_weight/preferred_skills_weight scoring - see skill_matcher.py.
+    # Never user-editable directly.
+    required_skills_type: Mapped[list[str]] = mapped_column(JSON, default=list)
+    preferred_skills_type: Mapped[list[str]] = mapped_column(JSON, default=list)
     min_experience_years: Mapped[float] = mapped_column(Float, default=0.0)
     education_requirement: Mapped[str] = mapped_column(
         String(50), default="none"

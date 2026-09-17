@@ -123,3 +123,132 @@ def canonicalize_or_fallback(phrases: list[str]) -> list[str]:
         return canonicalize_phrases(phrases)
     except CanonicalizationError:
         return list(phrases)
+
+
+CLASSIFY_CANONICALIZE_TOOL = {
+    "name": "classify_and_canonicalize_phrases",
+    "description": (
+        "Record an English canonical form and a hard/soft skill classification for each input "
+        "phrase, in the same order."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "canonical_form": {
+                            "type": "string",
+                            "description": (
+                                "English canonical form of the phrase, e.g. 'vizuallaşdırma' -> "
+                                "'data visualization'; 'MS Excel' -> 'Microsoft Excel'."
+                            ),
+                        },
+                        "skill_type": {
+                            "type": "string",
+                            "enum": ["hard", "soft"],
+                            "description": (
+                                "'hard' for a technical/professional skill, tool, technology, "
+                                "certification, or other measurable competency (e.g. Python, "
+                                "Microsoft Excel, accounting, welding, English B2). 'soft' for an "
+                                "interpersonal/behavioral trait not tied to a specific tool or "
+                                "technical competency (e.g. communication, teamwork, leadership, "
+                                "adaptability, time management, attention to detail, stress "
+                                "tolerance). Judge by the phrase's actual meaning, not its surface "
+                                "wording - e.g. 'communication skills' is soft, but 'communication "
+                                "protocols' (a networking topic) is hard."
+                            ),
+                        },
+                    },
+                    "required": ["canonical_form", "skill_type"],
+                },
+            }
+        },
+        "required": ["results"],
+    },
+}
+
+CLASSIFY_SYSTEM_PROMPT = """You process short skill/requirement phrases (which may be in Azerbaijani, \
+Russian, English, or a mix) taken from a job posting. For each phrase, in order, you do two things:
+
+1. Produce a clean, standard English canonical form for text matching - same rules as plain \
+translation/normalization: translate non-English phrases to English, normalize already-English \
+phrases to their common standard form (e.g. "excel" -> "Microsoft Excel"), keep each form short (a \
+few words, not a sentence).
+2. Classify the phrase as a "hard" skill (a technical/professional skill, tool, technology, \
+certification, or other measurable competency) or a "soft" skill (an interpersonal/behavioral trait, \
+not tied to any specific tool or technical competency). Judge by what the phrase actually means in \
+context, not just how it reads - a soft-skill-shaped phrase can be a technical term (e.g. \
+"communication protocols" is a hard networking skill, not the soft skill "communication").
+
+Preserve the EXACT order and count of the input: output exactly one result per input phrase. Always \
+respond by calling the classify_and_canonicalize_phrases tool."""
+
+
+def classify_and_canonicalize_phrases(phrases: list[str]) -> tuple[list[str], list[str]]:
+    """Like canonicalize_phrases, but also classifies each phrase as a "hard" or
+    "soft" skill in the same call, so a vacancy's requirements get both in one
+    API round-trip. Returns (canonical_forms, skill_types), both in the same
+    order/count as `phrases`.
+
+    Used only for a vacancy's required_skills/preferred_skills - candidate
+    skills don't need this classification, since it's the vacancy side that
+    decides what gets excluded from scoring (see skill_matcher.py).
+    """
+    if not phrases:
+        return [], []
+
+    client = _get_client()
+    numbered = "\n".join(f"{i + 1}. {phrase}" for i, phrase in enumerate(phrases))
+
+    try:
+        response = client.messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=2048,
+            system=CLASSIFY_SYSTEM_PROMPT,
+            tools=[CLASSIFY_CANONICALIZE_TOOL],
+            tool_choice={"type": "tool", "name": "classify_and_canonicalize_phrases"},
+            messages=[{"role": "user", "content": f"Phrases:\n{numbered}"}],
+        )
+    except Exception as e:
+        raise CanonicalizationError(f"Claude API call failed: {e}") from e
+
+    results: list[Any] | None = None
+    for block in response.content:
+        if block.type == "tool_use" and block.name == "classify_and_canonicalize_phrases":
+            results = block.input.get("results")
+            break
+
+    if results is None:
+        raise CanonicalizationError("Model response did not include results")
+    if len(results) != len(phrases):
+        raise CanonicalizationError(
+            f"Expected {len(phrases)} results, got {len(results)} - discarding to avoid misalignment"
+        )
+
+    canonical_forms: list[str] = []
+    skill_types: list[str] = []
+    for item in results:
+        if not isinstance(item, dict) or "canonical_form" not in item or "skill_type" not in item:
+            raise CanonicalizationError(f"Malformed result entry, discarding to avoid misalignment: {item!r}")
+        canonical_forms.append(str(item["canonical_form"]))
+        skill_type = item["skill_type"]
+        skill_types.append(skill_type if skill_type in ("hard", "soft") else "hard")
+
+    return canonical_forms, skill_types
+
+
+def classify_and_canonicalize_or_fallback(phrases: list[str]) -> tuple[list[str], list[str]]:
+    """Same as classify_and_canonicalize_phrases, but never raises - falls back
+    to the original phrases (no cross-language benefit for this batch) and
+    "hard" for every phrase on any failure. Defaulting to "hard" rather than
+    "soft" matters: an AI outage should never silently drop a real requirement
+    from scoring, the same principle used elsewhere for AI-dependent steps."""
+    if not phrases:
+        return [], []
+    try:
+        return classify_and_canonicalize_phrases(phrases)
+    except CanonicalizationError:
+        return list(phrases), ["hard"] * len(phrases)

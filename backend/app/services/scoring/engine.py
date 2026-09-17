@@ -109,10 +109,16 @@ def score_candidate(
 
     # --- Skills ----------------------------------------------------------------
     required_score, required_details = match_skill_list(
-        vacancy.required_skills or [], vacancy.required_skills_canonical, structured
+        vacancy.required_skills or [],
+        vacancy.required_skills_canonical,
+        structured,
+        vacancy.required_skills_type,
     )
     preferred_score, preferred_details = match_skill_list(
-        vacancy.preferred_skills or [], vacancy.preferred_skills_canonical, structured
+        vacancy.preferred_skills or [],
+        vacancy.preferred_skills_canonical,
+        structured,
+        vacancy.preferred_skills_type,
     )
 
     # --- Responsibilities match ---------------------------------------------
@@ -231,13 +237,21 @@ def score_candidate(
             "required_skills": {
                 "matched": [d["requirement"] for d in required_details if d.get("matched")],
                 "missing": [d["requirement"] for d in required_details if d.get("matched") is False],
-                "not_scored_here": [d["requirement"] for d in required_details if d.get("matched") is None],
+                "not_scored_here": [
+                    {"requirement": d["requirement"], "reason": d.get("excluded_reason")}
+                    for d in required_details
+                    if d.get("matched") is None
+                ],
                 "details": required_details,
             },
             "preferred_skills": {
                 "matched": [d["requirement"] for d in preferred_details if d.get("matched")],
                 "missing": [d["requirement"] for d in preferred_details if d.get("matched") is False],
-                "not_scored_here": [d["requirement"] for d in preferred_details if d.get("matched") is None],
+                "not_scored_here": [
+                    {"requirement": d["requirement"], "reason": d.get("excluded_reason")}
+                    for d in preferred_details
+                    if d.get("matched") is None
+                ],
                 "details": preferred_details,
             },
             "experience": {
