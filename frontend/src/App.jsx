@@ -923,6 +923,7 @@ function NeedsAttentionPanel({ candidates, retrying, note, onRetry, onChanged })
 function RankingPanel({ ranking, vacancyId, onChanged }) {
   const [openId, setOpenId] = useState(null);
   const [removingId, setRemovingId] = useState(null);
+  const [rescoringId, setRescoringId] = useState(null);
 
   async function handleRemove(e, candidateId, name) {
     e.stopPropagation(); // don't also toggle the row open/closed
@@ -935,6 +936,19 @@ function RankingPanel({ ranking, vacancyId, onChanged }) {
       alert(err.message || "Could not remove candidate");
     } finally {
       setRemovingId(null);
+    }
+  }
+
+  async function handleRecompute(e, candidateId) {
+    e.stopPropagation(); // don't also toggle the row open/closed
+    setRescoringId(candidateId);
+    try {
+      await api.scoreSingleCandidate(vacancyId, candidateId);
+      onChanged();
+    } catch (err) {
+      alert(err.message || "Could not recompute this candidate's score");
+    } finally {
+      setRescoringId(null);
     }
   }
 
@@ -991,6 +1005,14 @@ function RankingPanel({ ranking, vacancyId, onChanged }) {
                   <span className="score-num">{Math.round(row.total_score)}</span>
                   <span className="score-max">/100</span>
                 </div>
+                <button
+                  className="row-recompute"
+                  onClick={(e) => handleRecompute(e, row.candidate.id)}
+                  disabled={rescoringId === row.candidate.id}
+                  title="Recompute this candidate's score"
+                >
+                  {rescoringId === row.candidate.id ? <span className="spinner dark" /> : "Recompute"}
+                </button>
                 <button
                   className="row-remove"
                   onClick={(e) => handleRemove(e, row.candidate.id, name)}
