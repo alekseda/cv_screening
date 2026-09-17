@@ -113,12 +113,14 @@ def score_candidate(
         vacancy.required_skills_canonical,
         structured,
         vacancy.required_skills_type,
+        vacancy.required_skills_language_code,
     )
     preferred_score, preferred_details = match_skill_list(
         vacancy.preferred_skills or [],
         vacancy.preferred_skills_canonical,
         structured,
         vacancy.preferred_skills_type,
+        vacancy.preferred_skills_language_code,
     )
 
     # --- Responsibilities match ---------------------------------------------

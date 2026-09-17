@@ -128,8 +128,8 @@ def canonicalize_or_fallback(phrases: list[str]) -> list[str]:
 CLASSIFY_CANONICALIZE_TOOL = {
     "name": "classify_and_canonicalize_phrases",
     "description": (
-        "Record an English canonical form and a hard/soft skill classification for each input "
-        "phrase, in the same order."
+        "Record an English canonical form, a hard/soft skill classification, and a language code "
+        "(if applicable) for each input phrase, in the same order."
     ),
     "input_schema": {
         "type": "object",
@@ -161,8 +161,19 @@ CLASSIFY_CANONICALIZE_TOOL = {
                                 "protocols' (a networking topic) is hard."
                             ),
                         },
+                        "language_code": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "If this phrase is a spoken/written language requirement (e.g. "
+                                "'İngilis dili biliyi', 'Russian language - fluent'), the ISO 639-1 "
+                                "two-letter code for that language (e.g. 'en', 'az', 'ru', 'tr'), "
+                                "regardless of spelling/script. Null if the phrase is not about a "
+                                "spoken/written language at all (e.g. a technical skill, a soft "
+                                "skill, education, experience)."
+                            ),
+                        },
                     },
-                    "required": ["canonical_form", "skill_type"],
+                    "required": ["canonical_form", "skill_type", "language_code"],
                 },
             }
         },
@@ -171,7 +182,7 @@ CLASSIFY_CANONICALIZE_TOOL = {
 }
 
 CLASSIFY_SYSTEM_PROMPT = """You process short skill/requirement phrases (which may be in Azerbaijani, \
-Russian, English, or a mix) taken from a job posting. For each phrase, in order, you do two things:
+Russian, English, or a mix) taken from a job posting. For each phrase, in order, you do three things:
 
 1. Produce a clean, standard English canonical form for text matching - same rules as plain \
 translation/normalization: translate non-English phrases to English, normalize already-English \
@@ -182,23 +193,30 @@ certification, or other measurable competency) or a "soft" skill (an interperson
 not tied to any specific tool or technical competency). Judge by what the phrase actually means in \
 context, not just how it reads - a soft-skill-shaped phrase can be a technical term (e.g. \
 "communication protocols" is a hard networking skill, not the soft skill "communication").
+3. If the phrase is a spoken/written language requirement, set language_code to that language's ISO \
+639-1 code (e.g. "İngilis dili" / "İnglis dili" / "English fluency" all -> "en") regardless of how \
+the language's name is spelled or misspelled on the posting - downstream matching relies on this \
+code, not the raw spelling. Set it to null for anything that isn't a language requirement.
 
 Preserve the EXACT order and count of the input: output exactly one result per input phrase. Always \
 respond by calling the classify_and_canonicalize_phrases tool."""
 
 
-def classify_and_canonicalize_phrases(phrases: list[str]) -> tuple[list[str], list[str]]:
+def classify_and_canonicalize_phrases(phrases: list[str]) -> tuple[list[str], list[str], list[str | None]]:
     """Like canonicalize_phrases, but also classifies each phrase as a "hard" or
-    "soft" skill in the same call, so a vacancy's requirements get both in one
-    API round-trip. Returns (canonical_forms, skill_types), both in the same
-    order/count as `phrases`.
+    "soft" skill and, if it's a language requirement, resolves its language
+    code - all in the same call, so a vacancy's requirements get everything in
+    one API round-trip. Returns (canonical_forms, skill_types, language_codes),
+    all in the same order/count as `phrases`.
 
     Used only for a vacancy's required_skills/preferred_skills - candidate
     skills don't need this classification, since it's the vacancy side that
-    decides what gets excluded from scoring (see skill_matcher.py).
+    decides what gets excluded from scoring (see skill_matcher.py). Candidate
+    resumes get their own language_code per language via ai_structurer.py
+    instead, since that's a separate AI call with its own schema.
     """
     if not phrases:
-        return [], []
+        return [], [], []
 
     client = _get_client()
     numbered = "\n".join(f"{i + 1}. {phrase}" for i, phrase in enumerate(phrases))
@@ -230,25 +248,31 @@ def classify_and_canonicalize_phrases(phrases: list[str]) -> tuple[list[str], li
 
     canonical_forms: list[str] = []
     skill_types: list[str] = []
+    language_codes: list[str | None] = []
     for item in results:
         if not isinstance(item, dict) or "canonical_form" not in item or "skill_type" not in item:
             raise CanonicalizationError(f"Malformed result entry, discarding to avoid misalignment: {item!r}")
         canonical_forms.append(str(item["canonical_form"]))
         skill_type = item["skill_type"]
         skill_types.append(skill_type if skill_type in ("hard", "soft") else "hard")
+        language_code = item.get("language_code")
+        language_codes.append(str(language_code) if language_code else None)
 
-    return canonical_forms, skill_types
+    return canonical_forms, skill_types, language_codes
 
 
-def classify_and_canonicalize_or_fallback(phrases: list[str]) -> tuple[list[str], list[str]]:
+def classify_and_canonicalize_or_fallback(phrases: list[str]) -> tuple[list[str], list[str], list[str | None]]:
     """Same as classify_and_canonicalize_phrases, but never raises - falls back
-    to the original phrases (no cross-language benefit for this batch) and
-    "hard" for every phrase on any failure. Defaulting to "hard" rather than
-    "soft" matters: an AI outage should never silently drop a real requirement
-    from scoring, the same principle used elsewhere for AI-dependent steps."""
+    to the original phrases (no cross-language benefit for this batch), "hard"
+    for every phrase, and None for every language_code on any failure.
+    Defaulting to "hard" (not "soft") and None (not a guessed code) matters:
+    an AI outage should never silently drop a real requirement from scoring or
+    misroute it - a None language_code just means the requirement falls back
+    to the alias-based language_matcher.detect_language_code() instead, the
+    same principle used elsewhere for AI-dependent steps."""
     if not phrases:
-        return [], []
+        return [], [], []
     try:
         return classify_and_canonicalize_phrases(phrases)
     except CanonicalizationError:
-        return list(phrases), ["hard"] * len(phrases)
+        return list(phrases), ["hard"] * len(phrases), [None] * len(phrases)

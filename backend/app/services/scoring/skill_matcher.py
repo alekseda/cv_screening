@@ -219,6 +219,7 @@ def match_skill_list(
     requirement_canonicals: list[str] | None,
     structured: dict,
     requirement_types: list[str] | None = None,
+    requirement_language_codes: list[str | None] | None = None,
 ) -> tuple[float, list[dict]]:
     """Runs every requirement against the resume.
 
@@ -248,6 +249,13 @@ def match_skill_list(
     "hard" - i.e. still scored, since an unclassified requirement being
     dropped from scoring would be a worse failure mode than it being scored.
 
+    `requirement_language_codes` should likewise line up with `requirements`
+    (see Vacancy.required_skills_language_code/preferred_skills_language_code),
+    each entry an ISO 639-1 code or None. Used to detect and match language
+    requirements without depending on language_matcher's alias-spelling list -
+    see the module docstring there. Missing/mismatched-length/None entries
+    fall back to that alias list per-requirement, same as before this existed.
+
     Returns (fraction_matched, per_requirement_details). If every requirement
     was excluded (or the list was empty), scores 1.0 - a criterion that isn't
     being checked here shouldn't drag anyone's score down.
@@ -261,11 +269,16 @@ def match_skill_list(
     if not requirement_types or len(requirement_types) != len(requirements):
         requirement_types = ["hard"] * len(requirements)
 
+    if not requirement_language_codes or len(requirement_language_codes) != len(requirements):
+        requirement_language_codes = [None] * len(requirements)
+
     details: list[dict] = []
     scored_count = 0
     matched_count = 0
 
-    for req, canonical, skill_type in zip(requirements, requirement_canonicals, requirement_types):
+    for req, canonical, skill_type, language_code in zip(
+        requirements, requirement_canonicals, requirement_types, requirement_language_codes
+    ):
         excluded_as = is_non_skill_requirement(req)
         if excluded_as:
             details.append({
@@ -287,8 +300,8 @@ def match_skill_list(
             })
             continue
 
-        if is_language_requirement(req):
-            detail = match_language_requirement(req, structured)
+        if is_language_requirement(req, language_code):
+            detail = match_language_requirement(req, structured, language_code)
         else:
             detail = match_requirement(req, canonical, structured)
 

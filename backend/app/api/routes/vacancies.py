@@ -35,18 +35,25 @@ EMBEDDING_RELEVANT_FIELDS = {
 
 
 def _compute_skill_canonicals(vacancy: Vacancy) -> None:
-    """Derives English canonical forms and a hard/soft classification for
-    required/preferred skills, so the (rule-based) skill matcher can bridge
-    across languages and exclude soft skills from scoring - see
+    """Derives English canonical forms, a hard/soft classification, and a
+    language code (for language requirements) for required/preferred skills,
+    so the (rule-based) skill matcher can bridge across languages, exclude
+    soft skills from scoring, and match language requirements without
+    depending on language_matcher's alias-spelling list - see
     canonicalizer.py. Best-effort: falls back to the original phrases (no
-    cross-language benefit) and "hard" (still scored) rather than blocking
-    the request or silently dropping a requirement."""
-    vacancy.required_skills_canonical, vacancy.required_skills_type = classify_and_canonicalize_or_fallback(
-        vacancy.required_skills or []
-    )
-    vacancy.preferred_skills_canonical, vacancy.preferred_skills_type = classify_and_canonicalize_or_fallback(
-        vacancy.preferred_skills or []
-    )
+    cross-language benefit), "hard" (still scored), and no language code
+    (falls back to the alias list) rather than blocking the request or
+    silently dropping a requirement."""
+    (
+        vacancy.required_skills_canonical,
+        vacancy.required_skills_type,
+        vacancy.required_skills_language_code,
+    ) = classify_and_canonicalize_or_fallback(vacancy.required_skills or [])
+    (
+        vacancy.preferred_skills_canonical,
+        vacancy.preferred_skills_type,
+        vacancy.preferred_skills_language_code,
+    ) = classify_and_canonicalize_or_fallback(vacancy.preferred_skills or [])
 
 
 def _compute_vacancy_embedding(vacancy: Vacancy) -> None:
