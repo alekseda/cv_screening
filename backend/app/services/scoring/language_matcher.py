@@ -29,12 +29,23 @@ def _register(code: str, *names: str) -> None:
 _register("az", "azerbaijani", "azerbaycan", "azərbaycan", "azerbaycanca", "azərbaycanca",
           "azeri", "azerbaijan", "азербайджанский", "азербайджанский язык")
 _register("ru", "russian", "rus", "русский", "русский язык", "rusca", "rusça")
-_register("en", "english", "ingilis", "ingilis dili", "ingiliscə", "английский", "английский язык")
+_register("en", "english", "ingilis", "ingilis dili", "ingiliscə", "inglis", "inglis dili", "inglisce",
+          "английский", "английский язык")
 _register("tr", "turkish", "turk", "türk", "türkcə", "turkce", "турецкий")
 _register("de", "german", "alman", "немецкий")
 _register("fr", "french", "fransiz", "fransız", "французский")
 _register("ar", "arabic", "ereb", "ərəb", "арабский")
 _register("fa", "persian", "farsi", "fars", "персидский")
+
+# Azerbaijani is the market's default working language, so candidates
+# routinely leave it off their CV's language list - they list what they
+# consider notable (English, Russian, etc.) and treat Azerbaijani as a
+# given. Counting an unlisted Azerbaijani requirement as "missing" would
+# penalize normal CV-writing habits rather than actual language ability, so
+# it's assumed satisfied by default when the CV doesn't mention it either
+# way. Listed languages that AREN'T in this set still require an explicit
+# mention, same as before.
+AUTO_ASSUMED_LANGUAGES = {"az"}
 
 
 def detect_language_code(text: str) -> str | None:
@@ -87,6 +98,10 @@ def match_language_requirement(requirement: str, structured: dict) -> dict:
     "Yaxşı / Upper-Intermediate"), and silently failing a candidate on a
     level we parsed loosely would be worse than not checking it. The stated
     level is surfaced in the breakdown for the recruiter to judge.
+
+    Exception: a language in AUTO_ASSUMED_LANGUAGES (currently just
+    Azerbaijani) that the CV doesn't list at all is treated as satisfied
+    rather than missing - see the comment on that set.
     """
     code = detect_language_code(requirement)
     result = {
@@ -113,6 +128,18 @@ def match_language_requirement(requirement: str, structured: dict) -> dict:
             matched_tokens=[code],
             matched_sources=["language"],
             matched_via=[f"{code.upper()}: {proficiency}"],
+        )
+    elif code in AUTO_ASSUMED_LANGUAGES:
+        result.update(
+            matched=True,
+            match_ratio=1.0,
+            matched_tokens=[code],
+            matched_sources=["assumed"],
+            matched_via=[
+                f"{code.upper()}: not listed on the CV - assumed, since candidates in this "
+                "market don't reliably list Azerbaijani explicitly"
+            ],
+            assumed=True,
         )
     else:
         result["missing_tokens"] = [code]

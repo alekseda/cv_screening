@@ -199,3 +199,38 @@ assert "Strong team player" not in result["breakdown"]["required_skills"]["missi
     "Soft skill should never appear as a missing (i.e. scored-and-failed) requirement"
 )
 print("  OK: soft skill excluded, not penalized")
+
+# 8. Candidate never lists Azerbaijani (common - it's the default working
+# language here, so candidates often only list what they consider notable).
+# Requiring it should NOT cost points.
+result = score_candidate(
+    make_candidate(
+        structured_data={
+            "document_type": "resume",
+            "skills": ["MS Excel", "Pivot Tables", "SQL"],
+            "certificates": [],
+            "languages_spoken": [{"language": "English", "proficiency": "B2"}],  # no Azerbaijani listed
+            "work_history": [
+                {
+                    "title": "HR Intern", "company": "Acme", "start_date": "2024-01",
+                    "end_date": "2025-06", "is_current": False,
+                    "description": "Collected HR data and built Excel reports",
+                }
+            ],
+            "volunteer_experience": [],
+            "education": [
+                {"institution": "UNEC", "degree": "bachelor", "field_of_study": "Economics",
+                 "start_date": "2021-09", "end_date": "2025-06"}
+            ],
+        },
+    ),
+    make_vacancy(),
+    {0: {"relevance": 1.0, "reason": "Same role"}},
+)
+show("Azerbaijani not listed on CV (should still pass)", result)
+req_matched = result["breakdown"]["required_skills"]["matched"]
+req_missing = result["breakdown"]["required_skills"]["missing"]
+assert "Azərbaycan dili - sərbəst" in req_matched, (
+    f"Unlisted Azerbaijani should be assumed satisfied, not missing. matched={req_matched} missing={req_missing}"
+)
+print("  OK: unlisted Azerbaijani assumed satisfied, not penalized")
