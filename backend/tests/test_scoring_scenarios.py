@@ -290,3 +290,40 @@ assert "Requires fluent Frobnitz-glish" in req_matched, (
     f"AI-resolved language_code should match regardless of alias-list coverage, got matched={req_matched}"
 )
 print("  OK: AI-resolved language_code matched a spelling the alias list has never seen")
+
+# 10. A CV that just lists "University Name, 2017-2021" with no degree word
+# anywhere (education_level unset, degree=null on the entry) should still be
+# recognized as a completed bachelor's - this is the normal way AZ/RU/EN CVs
+# list a degree, not a missing credential.
+result = score_candidate(
+    make_candidate(
+        education_level=None,
+        highest_completed_degree_graduation_year=None,
+        structured_data={
+            "document_type": "resume",
+            "skills": ["MS Excel", "Pivot Tables", "SQL"],
+            "certificates": [],
+            "languages_spoken": [{"language": "Azərbaycan dili", "proficiency": "sərbəst", "language_code": "az"}],
+            "work_history": [
+                {
+                    "title": "Helpdesk", "company": "Bakubus MMC", "start_date": "2024-04",
+                    "end_date": None, "is_current": True,
+                    "description": "Texniki dəstək göstərilməsi",
+                }
+            ],
+            "volunteer_experience": [],
+            "education": [
+                {"institution": "Azerbaijan Technical University", "degree": None,
+                 "field_of_study": None, "start_date": "2017", "end_date": "2021"},
+            ],
+        },
+    ),
+    make_vacancy(accepts_current_students=False, graduation_year_min=None, graduation_year_max=None),
+    {0: {"relevance": 1.0, "reason": "Same role"}},
+)
+show("University-only education entry, no degree word stated (should pass as bachelor)", result)
+edu = result["breakdown"]["education"]
+assert edu["passed"], f"Expected untitled university education to be inferred as bachelor, got: {edu}"
+assert edu["candidate_education_level"] == "bachelor", f"Expected inferred level 'bachelor', got: {edu}"
+assert "inferred" in edu["reason"], f"Expected the inference to be flagged in the reason, got: {edu['reason']!r}"
+print("  OK: untitled university entry inferred as bachelor and flagged as inferred")
