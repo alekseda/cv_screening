@@ -13,6 +13,19 @@ skill matching, for two reasons found in real testing:
 
 Both are fixed by resolving language names to ISO-style codes on each side and
 comparing those, ignoring the filler words entirely.
+
+Two ways a language gets resolved to a code, tried in this order:
+1. AI-resolved: ai_structurer.py (candidate side) and canonicalizer.py's
+   classify_and_canonicalize (vacancy side) already ask the model to resolve
+   each language to its ISO 639-1 code as part of a call that's happening
+   anyway, so a misspelling ("İnglis dili" instead of "İngilis dili") or an
+   unlisted alias never causes a false "missing" - the model generalizes to
+   spellings this file was never updated for.
+2. LANGUAGE_ALIASES fallback: used when the AI-resolved code is missing (older
+   data parsed before this existed, or the AI call failed and fell back). A
+   fixed alias list can't generalize to new spellings, which is exactly the
+   gap AI resolution above is meant to close - this is the safety net, not
+   the primary path.
 """
 from app.services.scoring.text_normalization import normalize
 
@@ -68,14 +81,26 @@ def detect_language_code(text: str) -> str | None:
     return None
 
 
-def is_language_requirement(requirement: str) -> bool:
+def is_language_requirement(requirement: str, language_code: str | None = None) -> bool:
     """True if this requirement is about speaking a language, so the caller can
-    route it to this matcher instead of generic skill matching."""
+    route it to this matcher instead of generic skill matching.
+
+    `language_code` is the AI-resolved code for this requirement, if the
+    caller has one (see Vacancy.required_skills_language_code) - passing it
+    skips the alias-list guesswork entirely. Falls back to detect_language_code
+    when it's None (not classified, or classification failed)."""
+    if language_code:
+        return True
     return detect_language_code(requirement) is not None
 
 
 def candidate_language_codes(structured: dict) -> dict[str, str]:
-    """{language_code: proficiency_as_written} for everything the CV lists."""
+    """{language_code: proficiency_as_written} for everything the CV lists.
+
+    Prefers each entry's AI-resolved language_code (see ai_structurer.py) over
+    guessing from the language name - only falls back to the alias list
+    (detect_language_code) when language_code is missing, e.g. structured_data
+    parsed before that field existed, or the field came back null/unrecognized."""
     found: dict[str, str] = {}
     for entry in structured.get("languages_spoken") or []:
         if not isinstance(entry, dict):
@@ -83,13 +108,13 @@ def candidate_language_codes(structured: dict) -> dict[str, str]:
         name = entry.get("language")
         if not name:
             continue
-        code = detect_language_code(str(name))
+        code = entry.get("language_code") or detect_language_code(str(name))
         if code:
             found[code] = str(entry.get("proficiency") or "").strip()
     return found
 
 
-def match_language_requirement(requirement: str, structured: dict) -> dict:
+def match_language_requirement(requirement: str, structured: dict, requirement_language_code: str | None = None) -> dict:
     """Checks one language requirement against the CV's language list.
 
     Deliberately checks only WHETHER the language is listed, not the
@@ -99,11 +124,16 @@ def match_language_requirement(requirement: str, structured: dict) -> dict:
     level we parsed loosely would be worse than not checking it. The stated
     level is surfaced in the breakdown for the recruiter to judge.
 
+    `requirement_language_code` is this requirement's AI-resolved code (see
+    Vacancy.required_skills_language_code/preferred_skills_language_code) -
+    used when present, falling back to detect_language_code(requirement)
+    (the alias list) when it's None.
+
     Exception: a language in AUTO_ASSUMED_LANGUAGES (currently just
     Azerbaijani) that the CV doesn't list at all is treated as satisfied
     rather than missing - see the comment on that set.
     """
-    code = detect_language_code(requirement)
+    code = requirement_language_code or detect_language_code(requirement)
     result = {
         "requirement": requirement,
         "matched": False,

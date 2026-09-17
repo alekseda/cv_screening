@@ -58,6 +58,14 @@ class Vacancy(Base):
     # Never user-editable directly.
     required_skills_type: Mapped[list[str]] = mapped_column(JSON, default=list)
     preferred_skills_type: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # ISO 639-1 code per entry (or null) if that requirement is a language
+    # requirement, same order/count as required_skills/preferred_skills above,
+    # auto-derived alongside canonical/type - see canonicalizer.py. Lets
+    # language_matcher.py skip its own spelling-alias guesswork when this is
+    # set; falls back to it when null (e.g. AI classification failed). Never
+    # user-editable directly.
+    required_skills_language_code: Mapped[list[str | None]] = mapped_column(JSON, default=list)
+    preferred_skills_language_code: Mapped[list[str | None]] = mapped_column(JSON, default=list)
     min_experience_years: Mapped[float] = mapped_column(Float, default=0.0)
     education_requirement: Mapped[str] = mapped_column(
         String(50), default="none"

@@ -30,9 +30,11 @@ def make_vacancy(**overrides):
             "Azerbaijani language - fluent",
         ],
         required_skills_type=["hard", "hard"],
+        required_skills_language_code=[None, "az"],
         preferred_skills=["Power BI/Tableau", "SQL"],
         preferred_skills_canonical=["Power BI/Tableau", "SQL"],
         preferred_skills_type=["hard", "hard"],
+        preferred_skills_language_code=[None, None],
         min_experience_years=1.0,
         education_requirement="bachelor",
         accepts_current_students=True,
@@ -234,3 +236,57 @@ assert "Azərbaycan dili - sərbəst" in req_matched, (
     f"Unlisted Azerbaijani should be assumed satisfied, not missing. matched={req_matched} missing={req_missing}"
 )
 print("  OK: unlisted Azerbaijani assumed satisfied, not penalized")
+
+# 9. AI-resolved language_code should match a requirement/CV spelling that
+# isn't in language_matcher's hardcoded alias list at all - proving the
+# AI-resolved path works independent of that fallback list.
+result = score_candidate(
+    make_candidate(
+        structured_data={
+            "document_type": "resume",
+            "skills": ["MS Excel", "Pivot Tables", "SQL"],
+            "certificates": [],
+            # A spelling/script the alias list has never seen, but tagged
+            # with the AI-resolved code exactly as ai_structurer.py would.
+            "languages_spoken": [
+                {"language": "Anglais (fictional spelling)", "proficiency": "B2", "language_code": "en"},
+                {"language": "Azərbaycan dili", "proficiency": "sərbəst", "language_code": "az"},
+            ],
+            "work_history": [
+                {
+                    "title": "HR Intern", "company": "Acme", "start_date": "2024-01",
+                    "end_date": "2025-06", "is_current": False,
+                    "description": "Collected HR data and built Excel reports",
+                }
+            ],
+            "volunteer_experience": [],
+            "education": [
+                {"institution": "UNEC", "degree": "bachelor", "field_of_study": "Economics",
+                 "start_date": "2021-09", "end_date": "2025-06"}
+            ],
+        },
+    ),
+    make_vacancy(
+        required_skills=[
+            "MS Excel üzrə yaxşı səviyyədə biliklər (Pivot, əsas formulalar)",
+            "Azərbaycan dili - sərbəst",
+            "Requires fluent Frobnitz-glish",  # a made-up phrase the alias list can't parse either
+        ],
+        required_skills_canonical=[
+            "Microsoft Excel proficiency (Pivot tables, core formulas)",
+            "Azerbaijani language - fluent",
+            "Fluent English",
+        ],
+        required_skills_type=["hard", "hard", "hard"],
+        # AI resolved the made-up 3rd phrase to English, same as it resolved
+        # the candidate's made-up "Anglais (fictional spelling)" entry above.
+        required_skills_language_code=[None, "az", "en"],
+    ),
+    {0: {"relevance": 1.0, "reason": "Same role"}},
+)
+show("AI-resolved language_code bypasses the alias list", result)
+req_matched = result["breakdown"]["required_skills"]["matched"]
+assert "Requires fluent Frobnitz-glish" in req_matched, (
+    f"AI-resolved language_code should match regardless of alias-list coverage, got matched={req_matched}"
+)
+print("  OK: AI-resolved language_code matched a spelling the alias list has never seen")

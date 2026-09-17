@@ -100,6 +100,8 @@ class VacancyRead(BaseModel):
     preferred_skills_canonical: list[str]
     required_skills_type: list[str]  # "hard"/"soft" per entry, auto-derived, read-only
     preferred_skills_type: list[str]
+    required_skills_language_code: list[str | None]  # ISO 639-1 code per entry, auto-derived, read-only
+    preferred_skills_language_code: list[str | None]
     min_experience_years: float
     education_requirement: EducationLevel
     accepts_current_students: bool

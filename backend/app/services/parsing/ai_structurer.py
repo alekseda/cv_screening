@@ -121,8 +121,17 @@ RESUME_EXTRACTION_TOOL = {
                             "type": ["string", "null"],
                             "description": "As stated on the resume (e.g. native, fluent, intermediate, basic) - null if a language is listed with no level given",
                         },
+                        "language_code": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "The ISO 639-1 two-letter code for this language (e.g. 'en' for English, "
+                                "'az' for Azerbaijani, 'ru' for Russian, 'tr' for Turkish), regardless of "
+                                "what script or spelling the resume uses for the language's name. Null only "
+                                "if you genuinely don't recognize the language."
+                            ),
+                        },
                     },
-                    "required": ["language", "proficiency"],
+                    "required": ["language", "proficiency", "language_code"],
                 },
                 "description": "Spoken/written languages and proficiency levels, distinct from programming/technical skills",
             },
@@ -295,7 +304,10 @@ specifics - a recruiter will read these to judge relevance.
 - certificates are professional qualifications (e.g. PMP, CCNA, forklift license, security clearance) - \
 keep these separate from academic degrees (which go under education) and from general skills.
 - languages_spoken covers spoken/written language proficiency (e.g. Azerbaijani, Russian, English) - \
-keep these separate from technical/professional skills.
+keep these separate from technical/professional skills. Always fill in language_code with the ISO \
+639-1 code for the language itself, independent of how it's spelled/misspelled on the resume (e.g. \
+both "İngilis dili" and "İnglis dili" are language_code "en") - this is what downstream matching \
+relies on, not the raw spelling.
 - volunteer_experience is unpaid community/nonprofit/volunteer work - keep it separate from paid \
 work_history even if the resume lists them in the same section.
 - Always respond by calling the extract_resume_data tool. Do not respond with plain text."""
