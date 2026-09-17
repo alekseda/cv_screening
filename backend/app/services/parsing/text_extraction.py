@@ -47,7 +47,14 @@ def extract_text_from_pdf(file_path: str) -> str:
     pages_text: list[str] = []
     try:
         for page in doc:
-            text = page.get_text().strip()
+            # sort=True asks PyMuPDF to order text spans by position (roughly
+            # top-to-bottom, left-to-right) instead of their raw order in the
+            # PDF's content stream. Matters a lot for two-column CV templates
+            # (dates/company in a sidebar, description in the main column) -
+            # without it, a job's dates can end up paired with a DIFFERENT
+            # job's description in the extracted text, which then causes the
+            # AI structurer to misattribute or drop an entire job entry.
+            text = page.get_text(sort=True).strip()
             if len(text) < MIN_TEXT_CHARS_PER_PAGE:
                 text = _ocr_page(page)
             pages_text.append(text)

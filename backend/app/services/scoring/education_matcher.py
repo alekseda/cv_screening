@@ -62,6 +62,63 @@ def _rank(level: str | None) -> int:
         return -1
 
 
+# Institutions likely to be tertiary (university-level), used only as a
+# fallback signal (see _infer_untitled_degree_level) when a CV lists an
+# institution + dates but never states a degree name anywhere - extremely
+# common on AZ/RU/EN CVs, which often just write "University Name, 2017-2021"
+# and treat the degree as implied. Matched as a substring of the normalized
+# institution name.
+_UNIVERSITY_MARKERS = {
+    "university", "universitet", "institute", "institut", "academy", "akademiya",
+    "университет", "институт", "академия",
+}
+
+# Rules an institution OUT as vocational/secondary even if it also contains a
+# word from _UNIVERSITY_MARKERS (e.g. a vocational college named "... Institute
+# of ...").
+_NON_TERTIARY_MARKERS = {
+    "school", "college", "kollec", "texnikum", "mekteb", "училище", "школа", "колледж",
+}
+
+# A bachelor's programme in Azerbaijan (bakalavriat) is normally 4 years;
+# allow slack either side for part-time/extended/slightly-short records
+# rather than requiring an exact match.
+_PLAUSIBLE_BACHELOR_YEARS = range(3, 7)  # 3..6 inclusive
+
+
+def _infer_untitled_degree_level(entry: dict) -> str | None:
+    """Best-effort fallback for an education entry that names an institution
+    and dates but never states a degree at all (no "Bachelor"/"Bakalavr"/etc
+    anywhere in the resume) - very common on AZ/RU/EN CVs, which often just
+    write "University Name, 2017-2021" and consider the degree implied.
+
+    Only fires for a university/institute/academy (not a school or college)
+    with a plausible bachelor's-length span - deliberately narrow so it can't
+    accidentally credit a short course or certificate program with a degree.
+    Caller is responsible for checking the entry has actually finished
+    (is_degree_completed) before relying on this.
+    """
+    institution = normalize(entry.get("institution") or "")
+    if not institution:
+        return None
+    if not any(marker in institution for marker in _UNIVERSITY_MARKERS):
+        return None
+    if any(marker in institution for marker in _NON_TERTIARY_MARKERS):
+        return None
+
+    start, end = entry.get("start_date"), entry.get("end_date")
+    if not (isinstance(start, str) and isinstance(end, str)):
+        return None
+    start_year, end_year = start.strip()[:4], end.strip()[:4]
+    if not (start_year.isdigit() and end_year.isdigit()):
+        return None
+
+    if (int(end_year) - int(start_year)) not in _PLAUSIBLE_BACHELOR_YEARS:
+        return None
+
+    return "bachelor"
+
+
 def is_degree_completed(entry: dict, today_year: int | None = None) -> bool:
     """True if this education entry's programme has finished.
 
@@ -222,32 +279,45 @@ def check_education(structured: dict, candidate_fields: dict, vacancy) -> dict:
     candidate_rank = _rank(candidate_level)
     required_rank = _rank(requirement)
 
+    inferred_note: str | None = None
     if candidate_rank < 0:
         # Extraction may leave education_level unset for a CV that lists an
         # in-progress-looking degree whose end year has actually arrived
-        # (e.g. "2022-2026" read in 2026). Fall back to the raw education
-        # entries rather than failing someone who has in fact graduated.
+        # (e.g. "2022-2026" read in 2026), or that never states a degree name
+        # at all (just "University Name, 2017-2021" - very common on AZ/RU/EN
+        # CVs). Fall back to the raw education entries rather than failing
+        # someone who has in fact graduated.
         for entry in structured.get("education") or []:
             if not isinstance(entry, dict) or not is_degree_completed(entry):
                 continue
             level = degree_text_to_level(entry.get("degree") or "")
+            note = None
+            if not level:
+                level = _infer_untitled_degree_level(entry)
+                if level:
+                    note = (
+                        f"inferred from {entry.get('institution') or 'an unnamed institution'} "
+                        f"({entry.get('start_date')}–{entry.get('end_date')}) - no degree stated explicitly"
+                    )
             if level and _rank(level) > candidate_rank:
                 candidate_rank = _rank(level)
                 candidate_level = level
+                inferred_note = note
         result["candidate_education_level"] = candidate_level
 
     if candidate_rank < 0:
         result.update(passed=False, reason="No completed education level could be determined from the resume")
         return result
 
+    suffix = f" ({inferred_note})" if inferred_note else ""
     if candidate_rank >= required_rank:
         result.update(
             passed=True,
-            reason=f"Holds {candidate_level}, which meets the {requirement} requirement",
+            reason=f"Holds {candidate_level}{suffix}, which meets the {requirement} requirement",
         )
     else:
         result.update(
             passed=False,
-            reason=f"Holds {candidate_level}, below the required {requirement}",
+            reason=f"Holds {candidate_level}{suffix}, below the required {requirement}",
         )
     return result

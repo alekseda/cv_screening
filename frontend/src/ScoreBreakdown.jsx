@@ -18,6 +18,13 @@ function pct(n) {
   return `${Math.round((n ?? 0) * 100)}%`;
 }
 
+function formatPeriod(j) {
+  if (!j.start_date) return null;
+  const end = j.is_current ? "Present" : j.end_date || "?";
+  const duration = j.raw_years != null ? ` (${j.raw_years} yrs)` : "";
+  return `${j.start_date} – ${end}${duration}`;
+}
+
 export default function ScoreBreakdown({ breakdown, vacancyId, candidateId, onWageSaved }) {
   if (!breakdown) return null;
 
@@ -60,7 +67,11 @@ export default function ScoreBreakdown({ breakdown, vacancyId, candidateId, onWa
         ))}
       </div>
 
-      {/* Required skills */}
+      {/* Required skills - only what actually contributes to this component's
+          score (matched/missing). Excluded requirements (education/experience
+          redirects, soft skills) are scored elsewhere or not at all, and are
+          deliberately left out of this section - they're still in the raw
+          breakdown data for anyone inspecting it, just not shown here. */}
       <div className="bd-section">
         <h4>Required skills</h4>
         {(req.matched || []).map((s) => (
@@ -69,24 +80,13 @@ export default function ScoreBreakdown({ breakdown, vacancyId, candidateId, onWa
         {(req.missing || []).map((s) => (
           <span className="tag tag-bad" key={`rx-${s}`}>✗ {s}</span>
         ))}
-        {(req.not_scored_here || []).map((s, i) => {
-          const label = typeof s === "string" ? s : s.requirement;
-          const reason = (typeof s === "string" ? null : s.reason) || "scored elsewhere";
-          return (
-            <span className="tag tag-muted" key={`rn-${label}-${i}`}>{label} · {reason}</span>
-          );
-        })}
-        {(req.matched || []).length === 0 &&
-          (req.missing || []).length === 0 &&
-          (req.not_scored_here || []).length === 0 && (
-            <span className="comp-val">None specified</span>
-          )}
+        {(req.matched || []).length === 0 && (req.missing || []).length === 0 && (
+          <span className="comp-val">None specified</span>
+        )}
       </div>
 
-      {/* Preferred skills */}
-      {((pref.matched || []).length > 0 ||
-        (pref.missing || []).length > 0 ||
-        (pref.not_scored_here || []).length > 0) && (
+      {/* Preferred skills - same "only what's scored here" rule as above. */}
+      {((pref.matched || []).length > 0 || (pref.missing || []).length > 0) && (
         <div className="bd-section">
           <h4>Preferred skills</h4>
           {(pref.matched || []).map((s) => (
@@ -95,13 +95,6 @@ export default function ScoreBreakdown({ breakdown, vacancyId, candidateId, onWa
           {(pref.missing || []).map((s) => (
             <span className="tag tag-muted" key={`px-${s}`}>{s}</span>
           ))}
-          {(pref.not_scored_here || []).map((s, i) => {
-            const label = typeof s === "string" ? s : s.requirement;
-            const reason = (typeof s === "string" ? null : s.reason) || "scored elsewhere";
-            return (
-              <span className="tag tag-muted" key={`pn-${label}-${i}`}>{label} · {reason}</span>
-            );
-          })}
         </div>
       )}
 
@@ -120,6 +113,7 @@ export default function ScoreBreakdown({ breakdown, vacancyId, candidateId, onWa
                 {" · "}
                 {j.title || "Untitled role"}
                 {j.company ? ` · ${j.company}` : ""}
+                {formatPeriod(j) && ` · ${formatPeriod(j)}`}
                 {j.counted === false && " · not counted (no dates)"}
                 {j.relevance_reason && <div className="reason">{j.relevance_reason}</div>}
               </div>
