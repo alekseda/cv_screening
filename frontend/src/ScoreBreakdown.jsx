@@ -69,9 +69,13 @@ export default function ScoreBreakdown({ breakdown, vacancyId, candidateId, onWa
         {(req.missing || []).map((s) => (
           <span className="tag tag-bad" key={`rx-${s}`}>✗ {s}</span>
         ))}
-        {(req.not_scored_here || []).map((s) => (
-          <span className="tag tag-muted" key={`rn-${s}`}>{s} · scored elsewhere</span>
-        ))}
+        {(req.not_scored_here || []).map((s, i) => {
+          const label = typeof s === "string" ? s : s.requirement;
+          const reason = (typeof s === "string" ? null : s.reason) || "scored elsewhere";
+          return (
+            <span className="tag tag-muted" key={`rn-${label}-${i}`}>{label} · {reason}</span>
+          );
+        })}
         {(req.matched || []).length === 0 &&
           (req.missing || []).length === 0 &&
           (req.not_scored_here || []).length === 0 && (
@@ -80,7 +84,9 @@ export default function ScoreBreakdown({ breakdown, vacancyId, candidateId, onWa
       </div>
 
       {/* Preferred skills */}
-      {((pref.matched || []).length > 0 || (pref.missing || []).length > 0) && (
+      {((pref.matched || []).length > 0 ||
+        (pref.missing || []).length > 0 ||
+        (pref.not_scored_here || []).length > 0) && (
         <div className="bd-section">
           <h4>Preferred skills</h4>
           {(pref.matched || []).map((s) => (
@@ -89,6 +95,13 @@ export default function ScoreBreakdown({ breakdown, vacancyId, candidateId, onWa
           {(pref.missing || []).map((s) => (
             <span className="tag tag-muted" key={`px-${s}`}>{s}</span>
           ))}
+          {(pref.not_scored_here || []).map((s, i) => {
+            const label = typeof s === "string" ? s : s.requirement;
+            const reason = (typeof s === "string" ? null : s.reason) || "scored elsewhere";
+            return (
+              <span className="tag tag-muted" key={`pn-${label}-${i}`}>{label} · {reason}</span>
+            );
+          })}
         </div>
       )}
 

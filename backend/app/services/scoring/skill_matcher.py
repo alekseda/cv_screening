@@ -215,7 +215,10 @@ def is_non_skill_requirement(requirement: str) -> str | None:
 
 
 def match_skill_list(
-    requirements: list[str], requirement_canonicals: list[str] | None, structured: dict
+    requirements: list[str],
+    requirement_canonicals: list[str] | None,
+    structured: dict,
+    requirement_types: list[str] | None = None,
 ) -> tuple[float, list[dict]]:
     """Runs every requirement against the resume.
 
@@ -227,12 +230,23 @@ def match_skill_list(
     - Education / years-of-experience requirements are EXCLUDED from skill
       scoring entirely - they're scored by their own components, and matching
       them here as well would double-count them.
+    - Soft skills (communication, teamwork, leadership, etc. - classified by
+      canonicalizer.classify_and_canonicalize_phrases) are also EXCLUDED: the
+      whole point is that only hard/technical skills count toward
+      required_skills_weight/preferred_skills_weight.
     - Everything else gets normal token matching.
 
     `requirement_canonicals` should be the same length/order as `requirements`
     (see Vacancy.required_skills_canonical/preferred_skills_canonical). If it's
     missing or mismatched in length, each requirement falls back to using
     itself as its own canonical form.
+
+    `requirement_types` should likewise line up with `requirements` (see
+    Vacancy.required_skills_type/preferred_skills_type), with each entry
+    "hard" or "soft". If it's missing or mismatched in length (e.g. a vacancy
+    saved before this classification existed), every requirement defaults to
+    "hard" - i.e. still scored, since an unclassified requirement being
+    dropped from scoring would be a worse failure mode than it being scored.
 
     Returns (fraction_matched, per_requirement_details). If every requirement
     was excluded (or the list was empty), scores 1.0 - a criterion that isn't
@@ -244,11 +258,14 @@ def match_skill_list(
     if not requirement_canonicals or len(requirement_canonicals) != len(requirements):
         requirement_canonicals = list(requirements)
 
+    if not requirement_types or len(requirement_types) != len(requirements):
+        requirement_types = ["hard"] * len(requirements)
+
     details: list[dict] = []
     scored_count = 0
     matched_count = 0
 
-    for req, canonical in zip(requirements, requirement_canonicals):
+    for req, canonical, skill_type in zip(requirements, requirement_canonicals, requirement_types):
         excluded_as = is_non_skill_requirement(req)
         if excluded_as:
             details.append({
@@ -258,6 +275,15 @@ def match_skill_list(
                 "excluded_reason": (
                     f"Scored by the {excluded_as} component instead - not treated as a skill"
                 ),
+            })
+            continue
+
+        if skill_type == "soft":
+            details.append({
+                "requirement": req,
+                "matched": None,
+                "check": "excluded",
+                "excluded_reason": "Soft skill - excluded from scoring",
             })
             continue
 

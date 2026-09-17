@@ -14,7 +14,7 @@ from app.services.embeddings.text_builders import (
     build_vacancy_responsibilities_text,
 )
 from app.services.embeddings.voyage_client import EmbeddingError, embed_text
-from app.services.parsing.canonicalizer import canonicalize_or_fallback
+from app.services.parsing.canonicalizer import classify_and_canonicalize_or_fallback
 from app.services.parsing.jd_structurer import JDStructuringError, structure_vacancy
 
 router = APIRouter(prefix="/vacancies", tags=["vacancies"])
@@ -35,12 +35,18 @@ EMBEDDING_RELEVANT_FIELDS = {
 
 
 def _compute_skill_canonicals(vacancy: Vacancy) -> None:
-    """Derives English canonical forms for required/preferred skills, so the
-    (rule-based) skill matcher can bridge across languages - see
+    """Derives English canonical forms and a hard/soft classification for
+    required/preferred skills, so the (rule-based) skill matcher can bridge
+    across languages and exclude soft skills from scoring - see
     canonicalizer.py. Best-effort: falls back to the original phrases (no
-    cross-language benefit for this batch) rather than blocking the request."""
-    vacancy.required_skills_canonical = canonicalize_or_fallback(vacancy.required_skills or [])
-    vacancy.preferred_skills_canonical = canonicalize_or_fallback(vacancy.preferred_skills or [])
+    cross-language benefit) and "hard" (still scored) rather than blocking
+    the request or silently dropping a requirement."""
+    vacancy.required_skills_canonical, vacancy.required_skills_type = classify_and_canonicalize_or_fallback(
+        vacancy.required_skills or []
+    )
+    vacancy.preferred_skills_canonical, vacancy.preferred_skills_type = classify_and_canonicalize_or_fallback(
+        vacancy.preferred_skills or []
+    )
 
 
 def _compute_vacancy_embedding(vacancy: Vacancy) -> None:
