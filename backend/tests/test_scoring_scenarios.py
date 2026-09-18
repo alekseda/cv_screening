@@ -327,3 +327,40 @@ assert edu["passed"], f"Expected untitled university education to be inferred as
 assert edu["candidate_education_level"] == "bachelor", f"Expected inferred level 'bachelor', got: {edu}"
 assert "inferred" in edu["reason"], f"Expected the inference to be flagged in the reason, got: {edu['reason']!r}"
 print("  OK: untitled university entry inferred as bachelor and flagged as inferred")
+
+# 11. A completed role with only year-precision dates but an explicitly
+# stated duration ("3 ay") should use that duration, not a raw year
+# subtraction (which would read as 0 days for a same-year stint, or a full
+# year for one spanning a year boundary - both wildly wrong for a short
+# internship).
+result = score_candidate(
+    make_candidate(
+        structured_data={
+            "document_type": "resume",
+            "skills": ["MS Excel", "Pivot Tables", "SQL"],
+            "certificates": [],
+            "languages_spoken": [{"language": "Azərbaycan dili", "proficiency": "sərbəst", "language_code": "az"}],
+            "work_history": [
+                {
+                    "title": "HelpDesk Intern", "company": "AzerIsiq ASC",
+                    "start_date": "2023", "end_date": "2023", "is_current": False,
+                    "stated_duration_months": 3,
+                    "description": "Helpdesk support",
+                }
+            ],
+            "volunteer_experience": [],
+            "education": [
+                {"institution": "UNEC", "degree": "bachelor", "field_of_study": "Economics",
+                 "start_date": "2021-09", "end_date": "2025-06"}
+            ],
+        },
+    ),
+    make_vacancy(min_experience_years=0.2),
+    {0: {"relevance": 1.0, "reason": "Same role"}},
+)
+show("Year-only dates with a stated 3-month duration (should use 3 months, not 0)", result)
+per_job = result["breakdown"]["experience"]["per_job"][0]
+assert per_job["raw_years"] is not None and 0.2 <= per_job["raw_years"] <= 0.3, (
+    f"Expected ~0.25 years (3 months) from stated_duration_months, got: {per_job}"
+)
+print(f"  OK: stated duration used ({per_job['raw_years']} years instead of the raw year-diff of 0)")

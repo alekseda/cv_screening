@@ -995,7 +995,10 @@ function RankingPanel({ ranking, vacancyId, onChanged }) {
                   <div className="rank-name">{name}</div>
                   <div className="rank-sub">
                     {row.candidate.total_work_experience_years != null && (
-                      <span>{row.candidate.total_work_experience_years}y experience</span>
+                      <span>{row.candidate.total_work_experience_years}y total</span>
+                    )}
+                    {row.score_breakdown?.experience?.relevant_years != null && (
+                      <span>{row.score_breakdown.experience.relevant_years.toFixed(1)}y relevant</span>
                     )}
                     {row.candidate.education_level && <span>{row.candidate.education_level}</span>}
                     {row.candidate.detected_language && <span>{row.candidate.detected_language.toUpperCase()}</span>}

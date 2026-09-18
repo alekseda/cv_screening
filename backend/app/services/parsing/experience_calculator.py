@@ -10,7 +10,7 @@ date ranges - especially with overlap-merging - is multi-step arithmetic done
 the actual math into deterministic code makes the total exactly reproducible
 and auditable instead of a black-box AI output that occasionally sums wrong.
 """
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 # Average days/year used for the day-count -> years conversion, accounting for leap years.
 DAYS_PER_YEAR = 365.25
@@ -31,6 +31,58 @@ def parse_partial_date(value: str | None) -> date | None:
         except ValueError:
             continue
     return None
+
+
+def _has_month_precision(value: str | None) -> bool:
+    """True if `value` includes a month (YYYY-MM or YYYY-MM-DD) rather than
+    just a bare year - used to decide whether a stated duration should
+    override dates computed from `value`. A "-" is present in both
+    month-precision formats and absent from a bare "YYYY", so this is enough
+    to distinguish them without re-parsing."""
+    return bool(value) and isinstance(value, str) and "-" in value.strip()
+
+
+def resolve_job_period(entry: dict, today: date) -> tuple[date, date] | None:
+    """Resolves one work_history/volunteer_experience entry to a (start, end)
+    interval, or None if it can't be resolved at all (no usable start date,
+    or a malformed range with end before start).
+
+    end is `today` if the role is current or has no end_date - always
+    computed fresh, never from a stated duration, since a stated duration on
+    an ongoing role goes stale the moment it was written down.
+
+    For a COMPLETED role, prefers an explicitly stated duration
+    (stated_duration_months) over the parsed end_date when the dates
+    themselves are only year-precision: subtracting two bare years is a poor
+    estimate for anything shorter than ~a year (e.g. a 3-month stint entirely
+    within one calendar year comes out as 0 days; one spanning a year
+    boundary comes out as a full year instead of ~3 months), while a stated
+    duration is a fixed, precise fact about how long the role actually ran.
+    Falls back to the parsed end_date when no stated duration is available,
+    or when the dates already have month precision (in which case they're
+    the more reliable source - see ai_structurer.py's field description).
+    """
+    start = parse_partial_date(entry.get("start_date"))
+    if start is None:
+        return None
+
+    if entry.get("is_current") or not entry.get("end_date"):
+        return start, today
+
+    stated_months = entry.get("stated_duration_months")
+    has_month_precision = _has_month_precision(entry.get("start_date")) and _has_month_precision(entry.get("end_date"))
+
+    if stated_months is not None and not has_month_precision:
+        try:
+            months = float(stated_months)
+        except (TypeError, ValueError):
+            months = None
+        if months is not None and months >= 0:
+            end = start + timedelta(days=months * DAYS_PER_YEAR / 12)
+            return (start, end) if end >= start else None
+
+    end = parse_partial_date(entry.get("end_date")) or today
+    return (start, end) if end >= start else None
 
 
 def compute_total_experience(entries: list[dict], today: date | None = None) -> tuple[float | None, bool]:
@@ -54,22 +106,11 @@ def compute_total_experience(entries: list[dict], today: date | None = None) -> 
     skipped_count = 0
 
     for entry in entries:
-        start = parse_partial_date(entry.get("start_date"))
-        if start is None:
+        period = resolve_job_period(entry, today)
+        if period is None:
             skipped_count += 1
             continue
-
-        if entry.get("is_current") or not entry.get("end_date"):
-            end = today
-        else:
-            end = parse_partial_date(entry.get("end_date")) or today
-
-        if end < start:
-            # Malformed dates (end before start) - can't trust this entry either.
-            skipped_count += 1
-            continue
-
-        intervals.append((start, end))
+        intervals.append(period)
 
     if not intervals:
         return None, False

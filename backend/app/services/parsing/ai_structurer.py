@@ -75,8 +75,22 @@ RESUME_EXTRACTION_TOOL = {
                         "end_date": {"type": ["string", "null"], "description": "YYYY-MM, YYYY, or null if this is the current role"},
                         "is_current": {"type": "boolean"},
                         "description": {"type": ["string", "null"], "description": "Responsibilities/achievements, kept close to the original wording"},
+                        "stated_duration_months": {
+                            "type": ["integer", "null"],
+                            "description": (
+                                "If the resume explicitly states how long this role lasted (e.g. '3 ay', "
+                                "'6 months', '1 il'), convert it to a whole number of months and record it "
+                                "here, regardless of whether start_date/end_date are also given. This "
+                                "matters most when start_date/end_date are only year-precision - a stated "
+                                "duration is more accurate than what could be computed from bare years. "
+                                "Null if no explicit duration is stated for this entry."
+                            ),
+                        },
                     },
-                    "required": ["company", "title", "start_date", "end_date", "is_current", "description"],
+                    "required": [
+                        "company", "title", "start_date", "end_date", "is_current", "description",
+                        "stated_duration_months",
+                    ],
                 },
             },
             "education": {
@@ -146,8 +160,19 @@ RESUME_EXTRACTION_TOOL = {
                         "end_date": {"type": ["string", "null"], "description": "YYYY-MM, YYYY, or null if ongoing"},
                         "is_current": {"type": "boolean"},
                         "description": {"type": ["string", "null"]},
+                        "stated_duration_months": {
+                            "type": ["integer", "null"],
+                            "description": (
+                                "Same as work_history's stated_duration_months - an explicitly stated "
+                                "duration (e.g. '3 ay', '6 months'), converted to whole months. Null if not "
+                                "stated."
+                            ),
+                        },
                     },
-                    "required": ["organization", "role", "start_date", "end_date", "is_current", "description"],
+                    "required": [
+                        "organization", "role", "start_date", "end_date", "is_current", "description",
+                        "stated_duration_months",
+                    ],
                 },
                 "description": "Unpaid volunteer/community/nonprofit work - kept separate from paid work_history",
             },
@@ -289,6 +314,13 @@ military service status. Never infer it from the candidate's apparent gender, ag
 compute an accurate duration later (this matters a lot - a downstream system computes total experience from \
 these dates, so precision here is important). You do NOT need to sum durations yourself - just extract each \
 entry's dates as accurately as possible.
+- stated_duration_months: some resumes state a role's duration directly (e.g. "3 ay", "6 months", "1 il 2 ay") \
+even when start_date/end_date are only year-precision. Whenever a duration is stated anywhere near an entry, \
+record it here as a whole number of months (convert years to months, e.g. "1 il 2 ay" -> 14) - a stated \
+duration is more accurate than what could be computed from bare years, and the downstream system will prefer \
+it specifically in that case. Leave this null if no duration is stated for that entry, even if start_date/ \
+end_date are precise enough to compute one - it exists to capture information that's ONLY stated as a \
+duration, not to duplicate what the dates already say.
 - currently_enrolled / current_degree_level / current_year_of_study / expected_graduation_year describe a \
 candidate who is still studying and hasn't graduated yet (e.g. "final-year student", "4th-year student", \
 "sonuncu kurs tələbəsi"). This is separate from education_level, which is the highest degree already \

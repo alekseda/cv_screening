@@ -21,7 +21,7 @@ alongside an irrelevant one credits the relevant one.
 """
 from datetime import date
 
-from app.services.parsing.experience_calculator import DAYS_PER_YEAR, parse_partial_date
+from app.services.parsing.experience_calculator import DAYS_PER_YEAR, parse_partial_date, resolve_job_period
 
 # Above this similarity, two roles are treated as being in the same broad field
 # (e.g. network admin vs sysadmin) and get floored at ADJACENT_FIELD_FLOOR.
@@ -81,7 +81,6 @@ def compute_relevant_experience(
 
     for index, job in enumerate(jobs):
         relevance = job_relevances.get(index, 1.0)
-        start = parse_partial_date(job.get("start_date"))
 
         entry = {
             "job_index": index,
@@ -96,21 +95,18 @@ def compute_relevant_experience(
             "weighted_years": None,
         }
 
-        if start is None:
+        period = resolve_job_period(job, today)
+        if period is None:
             skipped += 1
-            entry["note"] = "No usable start date - excluded from the total"
+            entry["note"] = (
+                "No usable start date - excluded from the total"
+                if parse_partial_date(job.get("start_date")) is None
+                else "End date precedes start date - excluded from the total"
+            )
             audit.append(entry)
             continue
 
-        end = today if (job.get("is_current") or not job.get("end_date")) else (
-            parse_partial_date(job.get("end_date")) or today
-        )
-        if end < start:
-            skipped += 1
-            entry["note"] = "End date precedes start date - excluded from the total"
-            audit.append(entry)
-            continue
-
+        start, end = period
         raw_years = round((end - start).days / DAYS_PER_YEAR, 2)
         entry.update(
             counted=True,
