@@ -8,6 +8,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.candidate import Candidate
 from app.models.candidate_job_relevance import CandidateJobRelevance
+from app.models.candidate_skill_relevance import CandidateSkillRelevance, hash_requirement
 from app.models.match import Match
 from app.models.user import User
 from app.models.vacancy import Vacancy
@@ -15,6 +16,8 @@ from app.schemas.candidate import CandidateSummary
 from app.schemas.match import MatchRead, RankedCandidate, ScoringRunResult
 from app.services.scoring.engine import score_candidate
 from app.services.scoring.relevance_judge import RelevanceJudgementError, judge_job_relevance
+from app.services.scoring.skill_matcher import corpus_text, match_skill_list
+from app.services.scoring.skill_relevance_judge import SkillRelevanceError, judge_skill_relevance
 
 router = APIRouter(tags=["matching"])
 
@@ -87,6 +90,106 @@ async def _job_relevances_for(
     return judgements
 
 
+def _failed_hard_requirements(vacancy, structured: dict) -> list[str]:
+    """Runs the literal token pass standalone - same inputs score_candidate
+    itself uses - purely to find which requirements need the semantic
+    fallback judgement. Cheap, pure-Python, no I/O, so doing it twice (once
+    here, once inside score_candidate) costs nothing but a little CPU."""
+    failed: list[str] = []
+    for requirements, canonicals, types, codes in (
+        (
+            vacancy.required_skills or [],
+            vacancy.required_skills_canonical,
+            vacancy.required_skills_type,
+            vacancy.required_skills_language_code,
+        ),
+        (
+            vacancy.preferred_skills or [],
+            vacancy.preferred_skills_canonical,
+            vacancy.preferred_skills_type,
+            vacancy.preferred_skills_language_code,
+        ),
+    ):
+        _, details = match_skill_list(requirements, canonicals, structured, types, codes)
+        failed.extend(
+            d["requirement"] for d in details if d.get("matched") is False and d.get("check") != "language"
+        )
+    return failed
+
+
+async def _skill_relevances_for(
+    db: AsyncSession, candidate, vacancy, force_refresh: bool = False
+) -> dict[str, dict]:
+    """Semantic-fallback judgements for this candidate's requirements that
+    failed literal token matching (see skill_matcher.apply_semantic_fallback
+    and skill_relevance_judge.py).
+
+    Cached in candidate_skill_relevance, keyed by a hash of the requirement
+    text: the (paid) judgement call runs once per candidate per vacancy per
+    requirement, so re-scoring after a weight change is free. Requirements
+    that already match literally never reach here at all - this only ever
+    judges the ones the free check couldn't confirm.
+
+    On failure (or for any requirement the judge call didn't rate), that
+    requirement is simply left out of the returned dict - the engine then
+    leaves it exactly as the literal matcher scored it (still "missing"),
+    same as if this fallback didn't exist.
+    """
+    structured = candidate.structured_data or {}
+    failed = _failed_hard_requirements(vacancy, structured)
+    if not failed:
+        return {}
+
+    hashes = {hash_requirement(r): r for r in failed}
+
+    if force_refresh:
+        await db.execute(
+            delete(CandidateSkillRelevance).where(
+                CandidateSkillRelevance.candidate_id == candidate.id,
+                CandidateSkillRelevance.vacancy_id == vacancy.id,
+                CandidateSkillRelevance.requirement_hash.in_(hashes.keys()),
+            )
+        )
+        result: dict[str, dict] = {}
+        to_judge = failed
+    else:
+        cached = (
+            await db.execute(
+                select(CandidateSkillRelevance).where(
+                    CandidateSkillRelevance.candidate_id == candidate.id,
+                    CandidateSkillRelevance.vacancy_id == vacancy.id,
+                    CandidateSkillRelevance.requirement_hash.in_(hashes.keys()),
+                )
+            )
+        ).scalars().all()
+        result = {row.requirement: {"matched": row.matched, "reason": row.reason or ""} for row in cached}
+        cached_hashes = {hash_requirement(r) for r in result}
+        to_judge = [hashes[h] for h in hashes if h not in cached_hashes]
+
+    if not to_judge:
+        return result
+
+    try:
+        judgements = judge_skill_relevance(to_judge, corpus_text(structured))
+    except SkillRelevanceError:
+        return result
+
+    for requirement, judgement in judgements.items():
+        db.add(
+            CandidateSkillRelevance(
+                candidate_id=candidate.id,
+                vacancy_id=vacancy.id,
+                requirement_hash=hash_requirement(requirement),
+                requirement=requirement,
+                matched=judgement["matched"],
+                reason=judgement.get("reason"),
+            )
+        )
+        result[requirement] = judgement
+    await db.flush()
+    return result
+
+
 @router.post("/vacancies/{vacancy_id}/score", response_model=ScoringRunResult)
 async def score_vacancy_candidates(
     vacancy_id: uuid.UUID,
@@ -119,7 +222,10 @@ async def score_vacancy_candidates(
 
     for candidate in candidates:
         job_relevances = await _job_relevances_for(db, candidate, vacancy)
-        result = score_candidate(candidate, vacancy, job_relevances=job_relevances)
+        skill_relevances = await _skill_relevances_for(db, candidate, vacancy)
+        result = score_candidate(
+            candidate, vacancy, job_relevances=job_relevances, skill_relevances=skill_relevances
+        )
 
         # Unscorable candidates (unparsed file, non-CV upload) are still
         # recorded, at 0 with the reason attached - a recruiter needs to see
@@ -247,7 +353,10 @@ async def score_single_candidate(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate not found for this vacancy")
 
     job_relevances = await _job_relevances_for(db, candidate, vacancy, force_refresh=refresh_relevance)
-    result = score_candidate(candidate, vacancy, job_relevances=job_relevances)
+    skill_relevances = await _skill_relevances_for(db, candidate, vacancy, force_refresh=refresh_relevance)
+    result = score_candidate(
+        candidate, vacancy, job_relevances=job_relevances, skill_relevances=skill_relevances
+    )
 
     await db.execute(
         delete(Match).where(Match.vacancy_id == vacancy_id, Match.candidate_id == candidate_id)
