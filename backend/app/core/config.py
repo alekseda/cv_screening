@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # the same token is sent on every call.
     GLORRI_API_BASE_URL: str = "https://api.glorri.com"
     GLORRI_API_TOKEN: str | None = None
+    # How many résumé files sync_glorri_applicants downloads at once (worker
+    # threads, bounded by a semaphore) - these are plain HTTP GETs to
+    # wherever Glorri stored the upload, not an Anthropic/Voyage call, so
+    # this is independent of MAX_CONCURRENT_PARSES/MAX_CONCURRENT_SCORING_CALLS.
+    MAX_CONCURRENT_GLORRI_DOWNLOADS: int = 10
 
     # --- Resume parsing (Phase 2) ---
     OCR_LANGUAGES: str = "aze+rus+eng"  # Tesseract language codes

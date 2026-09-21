@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.candidate import Candidate
 from app.models.user import User
@@ -282,9 +284,10 @@ async def sync_glorri_applicants(
     skipped_blacklisted = 0
     skipped_no_resume: list[str] = []
     failed: list[dict] = []
-    to_process: list[Candidate] = []
-    imported_via_cache = 0
 
+    # Phase 1: cheap, sequential, no I/O - decide which applicants are even
+    # worth downloading a résumé for.
+    to_download: list[tuple[dict, str, str]] = []  # (glorri_candidate, display_name, resume_url)
     for gc in applied_candidates:
         glorri_id = gc.get("id")
         name_parts = gc.get("name") or {}
@@ -304,11 +307,35 @@ async def sync_glorri_applicants(
             skipped_no_resume.append(display_name)
             continue
 
-        try:
-            content, filename = await anyio.to_thread.run_sync(download_resume, resume_url)
-        except GlorriError as e:
-            failed.append({"name": display_name, "error": str(e)})
+        to_download.append((gc, display_name, resume_url))
+
+    # Phase 2: the slow part - downloading each résumé file from wherever
+    # Glorri stored it. These are independent network calls with no DB
+    # access, so they run concurrently, bounded by
+    # MAX_CONCURRENT_GLORRI_DOWNLOADS (same "gather the slow work
+    # concurrently, then write sequentially" shape as parse_and_store_many
+    # and score_vacancy_candidates use, and for the same reason: a single
+    # AsyncSession isn't safe to use from multiple concurrent tasks).
+    semaphore = anyio.Semaphore(settings.MAX_CONCURRENT_GLORRI_DOWNLOADS)
+
+    async def _bounded_download(resume_url: str) -> tuple[bytes, str] | GlorriError:
+        async with semaphore:
+            try:
+                return await anyio.to_thread.run_sync(download_resume, resume_url)
+            except GlorriError as e:
+                return e
+
+    downloads = await asyncio.gather(*(_bounded_download(url) for _, _, url in to_download))
+
+    # Phase 3: sequential again - validate each download and write to the DB.
+    to_process: list[Candidate] = []
+    imported_via_cache = 0
+
+    for (glorri_candidate, display_name, _), outcome in zip(to_download, downloads):
+        if isinstance(outcome, GlorriError):
+            failed.append({"name": display_name, "error": str(outcome)})
             continue
+        content, filename = outcome
 
         ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
         if ext not in ALLOWED_EXTENSIONS:
@@ -325,7 +352,7 @@ async def sync_glorri_applicants(
             file_path="",
             file_hash=file_hash,
             parsing_status="pending",
-            glorri_candidate_id=glorri_id,
+            glorri_candidate_id=glorri_candidate.get("id"),
         )
         db.add(candidate)
         await db.flush()
