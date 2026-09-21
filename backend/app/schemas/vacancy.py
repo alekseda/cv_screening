@@ -89,6 +89,14 @@ class VacancyUpdate(BaseModel):
     glorri_job_id: str | None = None
 
 
+class GlorriJobOption(BaseModel):
+    """One active job posting from Glorri.az, for picking a glorri_job_id
+    when linking a vacancy - see GET /vacancies/glorri-jobs."""
+
+    id: str
+    title: str
+
+
 class VacancyRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

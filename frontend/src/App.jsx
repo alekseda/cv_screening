@@ -313,6 +313,9 @@ function EditVacancy({ vacancy, onCancel, onSaved }) {
   const [wageMax, setWageMax] = useState(vacancy.wage_max ?? "");
   const [wageCurrency, setWageCurrency] = useState(vacancy.wage_currency || "AZN");
   const [glorriJobId, setGlorriJobId] = useState(vacancy.glorri_job_id || "");
+  const [glorriJobs, setGlorriJobs] = useState(null); // null = not loaded yet
+  const [loadingGlorriJobs, setLoadingGlorriJobs] = useState(false);
+  const [glorriJobsError, setGlorriJobsError] = useState("");
   const [weights, setWeights] = useState({ ...vacancy.scoring_weights });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -322,6 +325,19 @@ function EditVacancy({ vacancy, onCancel, onSaved }) {
 
   function setWeight(key, value) {
     setWeights((w) => ({ ...w, [key]: value }));
+  }
+
+  async function loadGlorriJobs() {
+    setGlorriJobsError("");
+    setLoadingGlorriJobs(true);
+    try {
+      const jobs = await api.listGlorriJobs();
+      setGlorriJobs(jobs);
+    } catch (err) {
+      setGlorriJobsError(err.message || "Could not load jobs from Glorri");
+    } finally {
+      setLoadingGlorriJobs(false);
+    }
   }
 
   async function submit(e) {
@@ -464,14 +480,39 @@ function EditVacancy({ vacancy, onCancel, onSaved }) {
             <label>Glorri.az job ID</label>
             <div className="hint">
               Links this vacancy to a job posting in Glorri, so "Sync from Glorri" on the vacancy
-              page knows which job's applicants to pull. Find it in Glorri's own job export/URL.
+              page knows which job's applicants to pull.
             </div>
-            <input
-              type="text"
-              value={glorriJobId}
-              onChange={(e) => setGlorriJobId(e.target.value)}
-              placeholder="e.g. job-id-123"
-            />
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                type="text"
+                value={glorriJobId}
+                onChange={(e) => setGlorriJobId(e.target.value)}
+                placeholder="e.g. job-id-123"
+                style={{ flex: 1 }}
+              />
+              <button type="button" className="btn btn-ghost" onClick={loadGlorriJobs} disabled={loadingGlorriJobs}>
+                {loadingGlorriJobs ? <span className="spinner dark" /> : "Browse active jobs"}
+              </button>
+            </div>
+            {glorriJobsError && <div className="hint" style={{ color: "var(--bad)" }}>{glorriJobsError}</div>}
+            {glorriJobs && (
+              glorriJobs.length > 0 ? (
+                <select
+                  style={{ marginTop: 8 }}
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) setGlorriJobId(e.target.value);
+                  }}
+                >
+                  <option value="">— Pick an active job from Glorri —</option>
+                  {glorriJobs.map((job) => (
+                    <option key={job.id} value={job.id}>{job.title} ({job.id})</option>
+                  ))}
+                </select>
+              ) : (
+                <div className="hint" style={{ marginTop: 8 }}>No active jobs found in Glorri.</div>
+              )
+            )}
           </div>
 
           <div className="field">

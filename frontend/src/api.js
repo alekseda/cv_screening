@@ -76,6 +76,11 @@ export async function getVacancy(id) {
   return handle(res);
 }
 
+export async function listGlorriJobs() {
+  const res = await fetch(`${BASE}/vacancies/glorri-jobs`, { headers: authHeaders() });
+  return handle(res);
+}
+
 export async function createVacancy(payload) {
   const res = await fetch(`${BASE}/vacancies`, {
     method: "POST",

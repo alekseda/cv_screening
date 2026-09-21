@@ -1,5 +1,6 @@
 import uuid
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,12 +9,13 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.models.vacancy import DEFAULT_SCORING_WEIGHTS, Vacancy
-from app.schemas.vacancy import EducationLevel, VacancyCreate, VacancyRead, VacancyUpdate
+from app.schemas.vacancy import EducationLevel, GlorriJobOption, VacancyCreate, VacancyRead, VacancyUpdate
 from app.services.embeddings.text_builders import (
     build_vacancy_embedding_text,
     build_vacancy_responsibilities_text,
 )
 from app.services.embeddings.voyage_client import EmbeddingError, embed_text
+from app.services.integrations.glorri_client import GlorriError, download_export, start_export
 from app.services.parsing.canonicalizer import classify_and_canonicalize_or_fallback
 from app.services.parsing.jd_structurer import JDStructuringError, structure_vacancy
 
@@ -159,6 +161,28 @@ async def list_vacancies(
     # per vacancy). Only the creator can edit/delete - see below.
     result = await db.execute(select(Vacancy).order_by(Vacancy.created_at.desc()))
     return result.scalars().all()
+
+
+@router.get("/glorri-jobs", response_model=list[GlorriJobOption])
+async def list_glorri_jobs(
+    current_user: User = Depends(get_current_user),
+):
+    """Active job postings from Glorri.az, so a recruiter can pick a
+    glorri_job_id when linking a vacancy (PATCH /vacancies/{id}) instead of
+    having to find and copy one by hand. Registered before /{vacancy_id}
+    so "glorri-jobs" is never swallowed as a vacancy id.
+    """
+    try:
+        export_meta = await anyio.to_thread.run_sync(start_export)
+        export_data = await anyio.to_thread.run_sync(download_export, export_meta["downloadUrl"])
+    except GlorriError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Glorri request failed: {e}") from e
+
+    return [
+        GlorriJobOption(id=job["id"], title=job.get("title") or job["id"])
+        for job in export_data.get("jobs") or []
+        if job.get("status") == "Active" and job.get("id")
+    ]
 
 
 @router.get("/{vacancy_id}", response_model=VacancyRead)
