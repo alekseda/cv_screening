@@ -1,25 +1,46 @@
-# CV Screening Tool — Phase 1-2: Scaffold + Auth + Resume Parsing
+# CV Screening Tool
 
-Multi-user AI resume-matching tool.
-- **Phase 1**: project skeleton, database, JWT-based recruiter login.
-- **Phase 2** (this update): vacancy CRUD (manual JD entry) + resume upload +
-  the parsing pipeline (PDF/DOCX extraction, OCR fallback, Claude structuring).
-
-Embeddings and the scoring engine are built in Phases 3-4.
+Multi-user AI resume-matching tool for recruiters: paste a job description
+(or enter it manually), upload a batch of résumés (PDF/DOCX, any mix of
+Azerbaijani/Russian/English, scanned or text), and get every candidate ranked
+0-100 against that vacancy with a full, auditable breakdown of *why*.
 
 ## Stack
 - **Backend**: FastAPI (async), SQLAlchemy 2.0, PostgreSQL + pgvector, Alembic
+- **Frontend**: React (Vite)
 - **Auth**: JWT (python-jose) + bcrypt password hashing
-- **Parsing**: PyMuPDF (PDF text), python-docx (DOCX text), Tesseract OCR
-  (aze+rus+eng) for scanned pages, Claude (forced tool-use) for structuring
-- Embedding column (`Vector(1024)`) is already in the schema, ready for Voyage AI in Phase 3
+- **Parsing**: PyMuPDF (PDF text, position-ordered for multi-column layouts),
+  python-docx (DOCX text), Tesseract OCR (aze+rus+eng) for scanned pages,
+  Claude (forced tool-use) for structuring into a fixed schema
+- **Embeddings**: Voyage AI (`voyage-multilingual-2`, 1024-dim) for
+  vacancy/candidate profile similarity
+- **AI judgement calls**: Claude, used where the code found rule-based or
+  embedding approaches genuinely don't work (see "How scoring works" below)
 
-## Run it — option A: fully via Docker (recommended now that OCR needs system packages)
+### Model tiering (cost control)
+Two Anthropic model settings, not one - because not every AI call in this
+system needs the same accuracy/cost tradeoff:
+- `ANTHROPIC_MODEL_STRUCTURING_DEFAULT` (default: a Haiku tier) - resume
+  structuring, a mostly-mechanical extraction task. Auto-escalates to
+  `ANTHROPIC_MODEL` if the cheap model's output looks unreliable (schema
+  failure, suspiciously empty output on substantial input).
+- `ANTHROPIC_MODEL` (default: an Opus tier) - job-relevance judgement
+  (`relevance_judge.py`) and the skill semantic fallback
+  (`skill_relevance_judge.py`). Both were deliberately kept on the strong
+  tier after testing showed the cheaper/rule-based alternatives don't work
+  for these specific tasks - see each module's own docstring for what was
+  tried and why it failed.
+
+Both are plain env vars (see `.env.example`), so swapping in a different
+provider/model for either tier is a config change, not a code change -
+useful context if you're benchmarking cheaper models for either tier.
+
+## Run it — option A: fully via Docker (recommended, since OCR needs system packages)
 
 ```bash
 cd backend
 cp .env.example .env
-# Edit .env: set a real JWT_SECRET_KEY and your ANTHROPIC_API_KEY
+# Edit .env: set a real JWT_SECRET_KEY and your ANTHROPIC_API_KEY / VOYAGE_API_KEY
 python -c "import secrets; print(secrets.token_urlsafe(64))"
 
 cd ..
@@ -30,6 +51,12 @@ docker compose exec api alembic upgrade head
 Visit **http://localhost:8000/docs**. Both Postgres+pgvector and the app
 (with Tesseract's aze/rus/eng language packs baked into its image via
 `backend/Dockerfile`) are running in containers.
+
+**Note**: the API image is built from source, not bind-mounted - after
+pulling backend code changes, re-run `docker compose build api && docker
+compose up -d api` (and `alembic upgrade head` if there's a new migration)
+for the running container to pick them up. A code change alone does not
+affect an already-running container.
 
 ## Run it — option B: app on host, only Postgres in Docker
 
@@ -55,7 +82,7 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Edit .env — set a real JWT_SECRET_KEY and your ANTHROPIC_API_KEY
+# Edit .env — set a real JWT_SECRET_KEY and your ANTHROPIC_API_KEY / VOYAGE_API_KEY
 python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
 
@@ -71,32 +98,45 @@ uvicorn app.main:app --reload --port 8000
 
 Visit **http://localhost:8000/docs**.
 
-## Try it out
+## Frontend
+
 ```bash
-# Register a recruiter
+cd frontend
+npm install
+npm run dev
+```
+
+Visit **http://localhost:5173**. The dev server proxies `/api` to the backend
+on `:8000` (see `vite.config.js`), so make sure the backend is running first.
+For production, `npm run build` outputs static files in `frontend/dist/`.
+
+**What it does**: sign in/register → vacancies list → **+ New vacancy** (paste
+a raw JD, everything else — required/preferred skills, education
+requirement, experience minimum, wage budget — is auto-extracted
+server-side) → open a vacancy, drag/drop résumés, **Process N résumés**
+(uploads, parses, and scores the whole vacancy in one action) → ranked
+candidate list, each row expandable into the full score breakdown
+(component contributions, matched/missing skills with the resume text that
+satisfied each one, per-job relevance with the AI's reasoning, education
+pass/fail, wage fit — including inline wage entry if a candidate's resume
+didn't state one). Each row also has its own **Recompute** button, for
+re-scoring just that candidate (e.g. after entering their wage, or after a
+scoring-logic change) without re-running the whole vacancy.
+
+## Try it via curl
+
+```bash
+# Register + log in
 curl -X POST http://localhost:8000/api/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email":"recruiter@company.az","password":"password123","full_name":"Aysel Mammadova"}'
-
-# Log in (OAuth2 form, not JSON)
 curl -X POST http://localhost:8000/api/v1/auth/login \
   -d "username=recruiter@company.az&password=password123"
-# -> returns {"access_token": "...", "token_type": "bearer"}
+# -> {"access_token": "...", "token_type": "bearer"}
 
-# Use the token
-curl http://localhost:8000/api/v1/users/me \
-  -H "Authorization: Bearer <token>"
-```
-
-## Try Phase 2: create a vacancy and upload resumes
-
-The easiest way is via the Swagger UI at `/docs` — click "Authorize" and
-paste your token, then use the endpoints interactively. Or via curl:
-
-```bash
 TOKEN="<paste access_token here>"
 
-# 1. Create a vacancy (manual JD entry)
+# Create a vacancy (manual JD entry - or paste a full JD and let extraction fill in the rest)
 curl -X POST http://localhost:8000/api/v1/vacancies \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{
@@ -109,243 +149,182 @@ curl -X POST http://localhost:8000/api/v1/vacancies \
   }'
 # -> note the returned "id" as VACANCY_ID
 
-# 2. Upload resumes (PDF/DOCX) against that vacancy
+# Upload resumes (PDF/DOCX) against that vacancy
 curl -X POST http://localhost:8000/api/v1/vacancies/$VACANCY_ID/candidates \
   -H "Authorization: Bearer $TOKEN" \
   -F "files=@/path/to/resume1.pdf" \
   -F "files=@/path/to/resume2.docx"
-# -> returns per-file status: success / failed / rejected
 
-# 3. List candidates for the vacancy
-curl http://localhost:8000/api/v1/vacancies/$VACANCY_ID/candidates \
+# Score + rank
+curl -X POST http://localhost:8000/api/v1/vacancies/$VACANCY_ID/score \
   -H "Authorization: Bearer $TOKEN"
-
-# 4. Inspect one candidate's full structured data + raw extracted text
-curl http://localhost:8000/api/v1/candidates/$CANDIDATE_ID \
+curl http://localhost:8000/api/v1/vacancies/$VACANCY_ID/ranking \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 A few things worth checking as you test:
-- Try at least one **scanned/image-only PDF** to confirm the OCR fallback fires
-  (check `detected_language` and that `raw_text` isn't empty).
-- Try one resume in each of **Azerbaijani, Russian, and English** and confirm
-  `detected_language` and `estimated_total_experience_years` look right.
-- If `ANTHROPIC_API_KEY` is missing or invalid, uploads will still succeed at
-  the HTTP level but `parsing_status` will be `"failed"` with the error message
-  in `parsing_error` — check there before assuming something's broken elsewhere.
-
-## What's in the schema already (for Phases 2-4, not wired up yet)
-- `Vacancy.scoring_weights` — configurable per-vacancy weights (hard-filter vs
-  semantic split, and sub-weights for required/preferred skills, experience,
-  education). Defaults live in `app/models/vacancy.py::DEFAULT_SCORING_WEIGHTS`.
-- `Candidate.raw_text` + `Candidate.structured_data` — both stored, so resumes
-  can be re-parsed later without re-uploading if the extraction schema changes.
-- `Vacancy.embedding` / `Candidate.embedding` — `Vector(1024)` columns
-  (matches `voyage-multilingual-2`'s output dimension), unused until Phase 3.
-- `Match.score_breakdown` — JSON field that Phase 4's scoring engine fills with
-  matched/missing skills, experience/education pass-fail, and the semantic vs.
-  hard-filter split, per the auditability requirement.
+- Try at least one **scanned/image-only PDF** to confirm the OCR fallback fires.
+- Try one resume in each of **Azerbaijani, Russian, and English**.
+- If `ANTHROPIC_API_KEY` is missing/invalid, uploads still succeed at the HTTP
+  level but `parsing_status` will be `"failed"` with the error in
+  `parsing_error` - check there before assuming something else is broken.
+- Uploading the *same file* (by content hash) to a second vacancy skips
+  re-parsing entirely and reuses the first parse's structured data/embedding.
 
 ## Project layout
 ```
 backend/
   app/
-    core/               # config, JWT + password hashing
-    db/                 # SQLAlchemy engine/session, declarative base
-    models/             # User, Vacancy, Candidate, Match
-    schemas/            # Pydantic request/response models
-    api/routes/         # auth, users, vacancies, candidates  (matching lands in Phase 4)
-    services/parsing/    # text_extraction.py, ai_structurer.py, pipeline.py
+    core/                     # config, JWT + password hashing
+    db/                       # SQLAlchemy engine/session, declarative base
+    models/                   # User, Vacancy, Candidate, Match,
+                               #   CandidateJobRelevance, CandidateSkillRelevance
+    schemas/                  # Pydantic request/response models
+    api/routes/                # auth, users, vacancies, candidates, matching
+    services/
+      parsing/                # text_extraction, ai_structurer, canonicalizer,
+                               #   jd_structurer, experience_calculator, pipeline
+      embeddings/              # voyage_client, text_builders
+      scoring/                 # engine (combines everything below into one score)
+        skill_matcher.py       #   literal token matching (the auditable first pass)
+        skill_relevance_judge.py  # semantic fallback for what the token pass misses
+        relevance_judge.py     #   AI-judged per-job relevance vs. vacancy responsibilities
+        education_matcher.py   #   standard-ladder + enrollment-window modes
+        wage_matcher.py         #  budget fit + hard veto
+        relevance.py            #  relevance-weighted experience-years math
     main.py
-  alembic/              # migrations
-  Dockerfile            # app image w/ Tesseract + aze/rus/eng language packs
-docker-compose.yml      # Postgres+pgvector + the app
+  alembic/versions/           # migrations, one per schema change
+  Dockerfile                  # app image w/ Tesseract + aze/rus/eng language packs
+  tests/test_scoring_scenarios.py  # ad-hoc engine scenarios, no DB/API keys needed
+frontend/
+  src/                        # React app (App.jsx, ScoreBreakdown.jsx, api.js, ...)
+docker-compose.yml            # Postgres+pgvector + the app
 ```
 
-## Phase 3 (this update): Embeddings
+## How scoring works
 
-Voyage AI (`voyage-multilingual-2`) embeddings for both vacancies and
-candidates, wired into the flows that already exist:
+Every candidate gets one 0-100 score per vacancy: a flat weighted sum of six
+components, always paired with a breakdown that says exactly how it was
+reached — nothing shown to a recruiter is a bare number they can't
+interrogate. Weights are per-vacancy configurable
+(`Vacancy.scoring_weights`, must sum to 1.0); defaults
+(`DEFAULT_SCORING_WEIGHTS` in `app/models/vacancy.py`):
 
-- Vacancy embeddings are computed on create, and recomputed on update only
-  if an embedding-relevant field changes (title/description/skills/
-  experience/education) - editing just the scoring weights won't trigger
-  an unnecessary API call.
-- Candidate embeddings are computed as part of the existing parse pipeline
-  (both initial upload and `/reparse`), built from skills, work history,
-  volunteer experience, education, certificates, and languages - explicitly
-  *not* from name/contact/age/height/military service, which aren't
-  relevant to job fit.
-- If a Voyage call fails (e.g. `VOYAGE_API_KEY` not set), the vacancy/candidate
-  is still created/parsed successfully - the failure is recorded in
-  `embedding_error` rather than blocking the request. Retry with
-  `POST /vacancies/{id}/recompute-embedding` or `/candidates/{id}/reparse`.
-- **Preview endpoint**: `GET /vacancies/{id}/candidates/by-similarity` ranks
-  that vacancy's candidates by cosine similarity alone (via pgvector). This
-  is *not* the final Phase 4 score - it has no hard filters yet - it's here
-  so you can sanity-check that embeddings are actually separating relevant
-  from irrelevant resumes before Phase 4 builds the full scoring engine on
-  top of it.
-
-Run migration `0005` to add the new `embedding_error` columns, and set
-`VOYAGE_API_KEY` in `.env`.
-
-## Phase 4 (this update): Scoring engine
-
-Every candidate gets one 0-100 score per vacancy, blended from a rule-based
-half and a semantic half, and always accompanied by a breakdown explaining it.
-
-**Endpoints**
-- `POST /vacancies/{id}/score` — (re)scores all candidates for a vacancy.
-  Re-runnable and cheap: it reuses stored structured data and embeddings, so
-  after tuning `scoring_weights` you just call it again.
-- `GET /vacancies/{id}/ranking` — candidates ordered by score, each with the
-  full breakdown attached.
-- `POST /vacancies/{id}/candidates/{cid}/score` — rescore one candidate.
-- `GET /vacancies/{id}/candidates/{cid}/match` — one stored score + breakdown.
-- `PATCH /candidates/{id}/wage` — record a salary expectation (manual for now).
-
-**Hard filter (~57.5%)** — fully rule-based and auditable. Sub-weights are
-per-vacancy configurable and validated to sum to 1.0:
-| Component | Default | Behaviour |
+| Component | Default weight | What it measures |
 |---|---|---|
-| required skills | 0.45 | fraction matched; each match reports the tokens and resume text that satisfied it |
-| preferred skills | 0.15 | bonus, deliberately lighter than required |
-| experience | 0.20 | partial credit vs. the minimum (2 of 3 years = 0.67) |
-| education | 0.10 | pass/fail, with a written reason |
-| wage | 0.10 | full credit at or under budget, gradual falloff above |
+| responsibilities | 0.45 | best-matching job vs. what the role actually involves (AI-judged) |
+| wage | 0.15 | salary expectation vs. budget, with a hard veto above 2x |
+| experience | 0.15 | relevance-weighted years vs. the stated minimum |
+| required skills | 0.10 | fraction matched, literal + semantic fallback |
+| education | 0.10 | pass/fail (two modes - see below), with a written reason |
+| preferred skills | 0.05 | same matching as required, deliberately lighter - a bonus, not a gate |
 
-**Semantic (~42.5%)** — cosine similarity between the candidate profile
-embedding and the vacancy embedding. If either embedding is missing, the score
-falls back to hard filters alone and says so, rather than treating an
-infrastructure failure as zero similarity.
+### Responsibilities & experience: AI-judged relevance, not embeddings
 
-**Relevance-weighted experience.** Each job's duration is multiplied by how
-relevant it is, so ten years in an unrelated field no longer sails past a
-three-year requirement — but nothing is erased either. Relevance comes from
-comparing each job's *description* (falling back to its title) against the
-vacancy's *responsibilities*, not title-to-title. Similarity at or above
-`ADJACENT_FIELD_THRESHOLD` (0.5) is floored at `ADJACENT_FIELD_FLOOR` (0.7),
-so same-field work (network admin → sysadmin) counts heavily. **These two
-constants are starting points and should be calibrated against real vacancy/CV
-pairs** — see `app/services/scoring/relevance.py`.
+Each of a candidate's jobs is rated 0.0-1.0 for how relevant it is to the
+vacancy's responsibilities, by a single batched Claude call per candidate
+(`relevance_judge.py`), cached per (candidate, vacancy) so re-scoring after a
+weight change is free. The **responsibilities** score is the single
+best-matching job's relevance (not an average - a strong relevant job
+shouldn't be dragged down by an unrelated one). **Experience** years are
+weighted by that same per-job relevance before comparing to the minimum, so
+ten years in an unrelated field no longer sails past a three-year
+requirement, but nothing is silently erased either. Overlapping job periods
+are split into disjoint segments and credited at the highest relevance
+covering each one, so concurrent jobs are never double-counted.
 
-Concurrent jobs are never double-counted: overlapping periods are split into
-disjoint segments and credited at the highest relevance covering each one.
+This was originally cosine similarity between job text and vacancy
+responsibilities, and was replaced after real-world testing showed it
+doesn't work: similarity for multilingual professional prose sits in a
+narrow band regardless of actual fit, and tracks text *length* more than
+meaning (three jobs with the identical title scored three different
+numbers). Judging "is this job relevant to that role" is a
+language-understanding task, which is what an LLM is actually good at - see
+`relevance_judge.py`'s own docstring for the full writeup. The embedding
+comparison still exists as a last-resort fallback if the judgement call
+itself fails.
 
-**Education, two modes.** Standard postings use the usual ladder (a higher
-degree satisfies a lower requirement). Postings with `accepts_current_students`
-(internships, graduate programmes) instead require being *currently enrolled*
-at that level, or having completed exactly that level inside the
-graduation-year window — an unrelated master's from years ago does **not**
-auto-qualify. Degree-specific graduation years are read from the raw
-`education` array, since `highest_completed_degree_graduation_year` answers a
-different question for anyone holding more than one degree.
+### Skills: literal matching first, semantic fallback second
 
-**Non-CV uploads score 0.** Resume parsing now classifies `document_type`
-(`resume` / `not_a_resume` / `blank_or_unreadable`); anything that isn't a
-resume short-circuits to 0 with an explicit reason rather than being silently
-scored against requirements.
+`skill_matcher.py` is the always-on, free first pass: a requirement matches
+if enough of its meaningful words (both its original wording and its
+English canonical translation - see "Cross-language matching" below) appear
+verbatim somewhere in the resume (skills, certificates, work history,
+education). It's deliberately literal rather than semantic, so every match
+is explainable as "these words matched that text."
 
-Run migration `0008`, then re-parse existing candidates
-(`POST /candidates/{id}/reparse`) so they pick up `document_type` and per-job
-embeddings, and recompute vacancy embeddings
-(`POST /vacancies/{id}/recompute-embedding`) for the new responsibilities vector.
+That also means real false negatives: plural/singular mismatches
+("visualizations" vs. "visualization"), or a skill demonstrated only through
+described work rather than matching keywords ("collected, cleaned, and
+validated large datasets" *is* data handling, but never says "handling").
+For any requirement the literal pass can't confirm, `skill_relevance_judge.py`
+asks an LLM whether the resume's actual content demonstrates it - cached per
+(candidate, vacancy, requirement) so, again, re-scoring is free. It's
+deliberately conservative (a vague/tangential connection is not a match) with
+one carve-out: genuine MS Excel use is treated as sufficient evidence for
+baseline features like pivot tables/basic formulas, since CVs describe what
+the work was for rather than which menu commands were used - every other
+tool keeps the strict standard.
 
-`backend/tests/test_scoring_scenarios.py` runs the engine through six
-scenarios (strong match, over-qualified master's, final-year student, non-CV
-upload, over-budget, missing embeddings) with no DB or API keys required.
+This mirrors the same "LLM judgement over embeddings" reasoning as
+relevance judging above, rather than a vector-similarity fallback - see
+`skill_relevance_judge.py`'s docstring.
 
-## Cross-language skill matching (fix)
+### Cross-language matching
 
-The hard-filter skill matcher is rule-based (auditable) rather than semantic,
-which meant a requirement written in Azerbaijani ("vizuallaşdırma") scored
-zero against an equivalent English candidate skill ("Data visualization") -
-no shared tokens, no match, even though they mean the same thing.
+A requirement written in Azerbaijani ("vizuallaşdırma") should match an
+equivalent English candidate skill ("Data visualization") even though they
+share no literal tokens. `canonicalizer.py` computes an English canonical
+form for both a vacancy's requirements and a candidate's skills (one small
+Claude call each, best-effort - falls back to the original phrases on
+failure). The matcher then scores a requirement's *original* wording and its
+*canonical* form **separately** and takes the better of the two, not their
+token union (unioning was tried first and found to inflate the token count
+whenever two phrasings share no literal words - the normal cross-language
+case - making the match threshold *harder* to clear, not easier).
 
-Fixed with a shared canonicalization step (`app/services/parsing/canonicalizer.py`):
-one small Claude call turns a list of short phrases into English canonical
-forms, in the same order. It's used on both sides:
-- **Vacancy**: `required_skills_canonical` / `preferred_skills_canonical`,
-  computed whenever `required_skills`/`preferred_skills` are set - whether
-  from JD auto-extraction or manual entry.
-- **Candidate**: `skills_canonical`, computed at parse time and stored
-  alongside `skills` inside `structured_data`.
+### Education: two modes
 
-The matcher then scores a requirement's *original* wording and its
-*canonical* form **separately** and takes the better of the two - not their
-token union. Unioning was tried first and found to be a bug: it inflates the
-required-token count whenever the two phrasings share no literal words (the
-normal case across languages), making the match threshold *harder* to clear,
-not easier. Verified against the exact reported case
-(`vizuallaşdırma` → `data visualization`): union scored it 0.67, take-the-best
-scores it a clean 1.0.
+- **Standard mode** (`accepts_current_students = False`): the usual ladder -
+  a higher completed degree satisfies a lower requirement.
+- **Enrollment-window mode** (`accepts_current_students = True`, typical of
+  internship/graduate-programme postings, with `graduation_year_min/max`):
+  an unrelated higher degree earned years ago does **not** auto-qualify.
+  Passes if either (a) currently enrolled at exactly the required level with
+  an expected graduation inside the window, or (b) holds *any* **completed**
+  degree at or above the required level whose graduation year falls inside
+  the window - covering both someone who finished the required level
+  in-window and has since started a higher one, and someone whose lower
+  degree is out-of-window but who went on to complete a higher one that
+  itself lands in the window.
 
-Canonicalization is best-effort - a failure falls back to the original
-phrases (matching still works, just without the cross-language benefit)
-rather than blocking vacancy creation or resume parsing.
+Degree names are read via an AZ/RU/EN alias table (`degree_text_to_level`),
+not a raw substring match - an entry reading "Bakalavr" or "бакалавр" never
+contains the literal substring "bachelor".
 
-Run migration `0009`, then re-run `/vacancies/{id}/score` - existing vacancies
-won't have canonical forms until their `required_skills`/`preferred_skills`
-are next set, and existing candidates need `/reparse` to get `skills_canonical`.
+### Wage
 
-## Wage veto (this update)
+Full credit at or under budget, gradual falloff above it, and a **hard veto**
+(whole score snaps to 0) at 2x the budget ceiling or more - not a realistic
+hire regardless of everything else
+(`wage_matcher.py::HARD_FAIL_MULTIPLE`). No stated wage expectation scores
+as neutral (full credit) rather than penalizing a candidate for an
+unknown - worth keeping in mind when comparing a candidate who disclosed a
+high expectation against one who simply didn't say.
 
-A candidate wanting **2x or more** of the vacancy's budget ceiling now scores
-**0 overall**, not just a low wage sub-score - a wage mismatch that large isn't
-a realistic hire regardless of how well they match everything else, so it's
-treated as a hard veto rather than being buried at the bottom of a ranking.
-`wage_matcher.py`'s `HARD_FAIL_MULTIPLE` controls the threshold (default 2.0).
-The breakdown still shows the full component scores plus `wage_hard_fail: true`
-and the reason, so a recruiter sees this was a wage veto, not a poor overall fit.
+### Non-CV uploads
 
-## Phase 5: Frontend
+Resume structuring classifies `document_type`
+(`resume`/`not_a_resume`/`blank_or_unreadable`); anything that isn't a
+résumé short-circuits to a score of 0 with an explicit reason rather than
+being evaluated against requirements it was never meant to satisfy.
 
-A React (Vite) single-page app - login, vacancy creation from a pasted JD,
-drag-and-drop résumé upload, and the ranked candidate list with an expandable
-per-candidate score breakdown.
+---
 
-**Design**: light, warm-paper background with deep-navy authority color and a
-restrained gold-bronze accent for scores; Fraunces (serif) for headings/scores,
-Inter for UI - built for calm, confident executive review, not a generic
-AI-tool look.
-
-### Run it
-
+`backend/tests/test_scoring_scenarios.py` runs the engine through a set of
+scenarios (strong match, over-qualified degree, final-year student, non-CV
+upload, over-budget wage, missing embeddings, and more) with no DB or API
+keys required - a quick sanity check after touching scoring logic:
 ```bash
-cd frontend
-npm install
-npm run dev
+python backend/tests/test_scoring_scenarios.py
 ```
-
-Visit **http://localhost:5173**. The dev server proxies `/api` to the backend
-on `:8000` (see `vite.config.js`), so make sure the backend is running first.
-
-For production, `npm run build` outputs static files in `frontend/dist/` -
-serve these with any static host (nginx, Caddy, etc.) alongside the API.
-
-### What it does
-
-1. **Sign in / register** - JWT stored in `sessionStorage`.
-2. **Vacancies list** → **+ New vacancy**: paste the raw job description
-   (optionally override the title or set a wage budget range) and submit -
-   everything else is auto-extracted server-side.
-3. Open a vacancy → **drag/drop or choose one or more PDF/DOCX files** →
-   **Process N résumés**. This uploads and parses each file, then triggers
-   scoring for the whole vacancy in one action.
-4. The **ranked candidate list** appears - name, score out of 100, and quick
-   metadata (experience, education, language). Click a row to expand the full
-   breakdown: component-by-component contribution, matched/missing skills,
-   per-job relevance with the AI's reasoning, education pass/fail, and wage fit.
-   A wage-vetoed candidate shows a red 0 with the veto reason up top.
-
-### Known simplification
-
-Candidate wage expectations aren't entered from the UI yet - the backend
-endpoint (`PATCH /candidates/{id}/wage`) exists, but there's no form for it in
-this pass. Worth adding to the candidate row (perhaps inline in the expanded
-breakdown) in a follow-up.
-
-## Next: Phase 5
-Frontend — login, vacancy setup with weight tuning, batch resume upload, and
-the ranked candidate list with an expandable per-candidate score breakdown.
