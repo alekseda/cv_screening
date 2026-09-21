@@ -15,7 +15,7 @@ from datetime import date
 from app.models.vacancy import DEFAULT_SCORING_WEIGHTS
 from app.services.scoring.education_matcher import check_education
 from app.services.scoring.relevance import compute_relevant_experience, cosine_similarity
-from app.services.scoring.skill_matcher import match_skill_list
+from app.services.scoring.skill_matcher import apply_semantic_fallback, match_skill_list
 from app.services.scoring.wage_matcher import check_wage
 
 # Document types that can't meaningfully be scored against a vacancy.
@@ -62,6 +62,7 @@ def score_candidate(
     candidate,
     vacancy,
     job_relevances: dict[int, dict] | None = None,
+    skill_relevances: dict[str, dict] | None = None,
     today: date | None = None,
 ) -> dict:
     """Scores one candidate against one vacancy.
@@ -72,6 +73,13 @@ def score_candidate(
     a judgement counts at full relevance rather than being silently dropped,
     since erasing real experience because of an infrastructure failure is
     the worse error.
+
+    `skill_relevances` maps requirement text -> {"matched": bool, "reason": str},
+    the semantic-fallback judgement for requirements that failed literal token
+    matching (see skill_relevance_judge.py and _skill_relevances_for in
+    routes/matching.py). Passing None skips the fallback entirely - a
+    requirement then simply stays "missing" if the words didn't overlap,
+    exactly as before this existed.
     """
     weights = _weights(vacancy)
     job_relevances = job_relevances or {}
@@ -122,6 +130,8 @@ def score_candidate(
         vacancy.preferred_skills_type,
         vacancy.preferred_skills_language_code,
     )
+    required_score, required_details = apply_semantic_fallback(required_score, required_details, skill_relevances)
+    preferred_score, preferred_details = apply_semantic_fallback(preferred_score, preferred_details, skill_relevances)
 
     # --- Responsibilities match ---------------------------------------------
     # How well the candidate's actual work matches what the role involves.

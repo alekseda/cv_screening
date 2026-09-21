@@ -107,6 +107,14 @@ def _candidate_corpus(structured: dict) -> list[tuple[str, str]]:
     return corpus
 
 
+def corpus_text(structured: dict) -> str:
+    """Joins the same resume text the literal token matcher draws from into
+    one block, for handing to an LLM as context (see skill_relevance_judge.py).
+    Kept on top of _candidate_corpus so the semantic fallback sees exactly
+    what the literal matcher saw - nothing more, nothing less."""
+    return "\n".join(f"[{label}] {text}" for label, text in _candidate_corpus(structured))
+
+
 def _match_ratio(tokens: set[str], corpus: list[tuple[str, str]]) -> tuple[float, dict[str, list[tuple[str, str]]]]:
     """Fraction of `tokens` found somewhere in the corpus, plus which corpus
     entries contributed each token (for the audit trail)."""
@@ -313,4 +321,49 @@ def match_skill_list(
     if scored_count == 0:
         return 1.0, details
 
+    return matched_count / scored_count, details
+
+
+def apply_semantic_fallback(
+    score: float, details: list[dict], skill_relevances: dict[str, dict] | None
+) -> tuple[float, list[dict]]:
+    """Upgrades requirements the literal token matcher missed to "matched" if
+    the (cached) LLM semantic judgement says the resume's substance actually
+    demonstrates them - see skill_relevance_judge.py for why this exists and
+    isn't an embedding comparison.
+
+    `skill_relevances` is {requirement_text: {"matched": bool, "reason": str}},
+    populated only for requirements that failed the literal pass (routes/
+    matching.py's _skill_relevances_for). A requirement with no entry here -
+    because it already matched literally, or because the judgement call
+    failed - is left exactly as match_skill_list scored it.
+
+    Mutates `details` in place (adding matched_via_semantic to any upgraded
+    entry) and returns the recomputed (score, details) pair, mirroring
+    match_skill_list's own return shape so callers can drop this in right
+    after it.
+    """
+    if not skill_relevances:
+        return score, details
+
+    scored_count = 0
+    matched_count = 0
+    for detail in details:
+        if detail.get("matched") is None:  # excluded (education/experience/soft skill)
+            continue
+        scored_count += 1
+        if detail["matched"]:
+            matched_count += 1
+            continue
+
+        judgement = skill_relevances.get(detail["requirement"])
+        if judgement and judgement.get("matched"):
+            detail["matched"] = True
+            detail["matched_via_semantic"] = (
+                judgement.get("reason") or "Matched by semantic judgement, not literal wording"
+            )
+            matched_count += 1
+
+    if scored_count == 0:
+        return score, details
     return matched_count / scored_count, details
