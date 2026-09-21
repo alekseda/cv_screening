@@ -24,12 +24,15 @@ system needs the same accuracy/cost tradeoff:
   structuring, a mostly-mechanical extraction task. Auto-escalates to
   `ANTHROPIC_MODEL` if the cheap model's output looks unreliable (schema
   failure, suspiciously empty output on substantial input).
-- `ANTHROPIC_MODEL` (default: an Opus tier) - job-relevance judgement
+- `ANTHROPIC_MODEL` (default: a Sonnet tier) - job-relevance judgement
   (`relevance_judge.py`) and the skill semantic fallback
-  (`skill_relevance_judge.py`). Both were deliberately kept on the strong
-  tier after testing showed the cheaper/rule-based alternatives don't work
-  for these specific tasks - see each module's own docstring for what was
-  tried and why it failed.
+  (`skill_relevance_judge.py`). Both were deliberately kept off rule-based/
+  embedding shortcuts after testing showed those don't work for these
+  specific tasks - see each module's own docstring for what was tried and
+  why it failed. Was Opus originally; moved to Sonnet after a head-to-head
+  comparison on real candidates found Sonnet's judgements close enough -
+  sometimes stricter in ways that looked more correct, not less - at a
+  fraction of the cost.
 
 Both are plain env vars (see `.env.example`), so swapping in a different
 provider/model for either tier is a config change, not a code change -
