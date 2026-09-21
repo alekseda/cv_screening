@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JWT_SECRET_KEY", "test-only-not-a-real-secret")
 
 from app.models.vacancy import DEFAULT_SCORING_WEIGHTS  # noqa: E402
+from app.services.parsing.canonicalizer import augment_sql_implies_statistics  # noqa: E402
 from app.services.scoring.engine import score_candidate  # noqa: E402
 
 
