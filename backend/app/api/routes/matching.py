@@ -1,10 +1,13 @@
+import asyncio
 import uuid
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.candidate import Candidate
 from app.models.candidate_job_relevance import CandidateJobRelevance
@@ -22,22 +25,22 @@ from app.services.scoring.skill_relevance_judge import SkillRelevanceError, judg
 router = APIRouter(tags=["matching"])
 
 
-async def _job_relevances_for(
+# --- Job relevance: cache state / AI call / cache write, kept as three small
+# pieces (rather than one function like the original version) so bulk scoring
+# can run the (slow, blocking) AI call concurrently across candidates while
+# keeping every DB read/write sequential - AsyncSession isn't safe to use from
+# multiple concurrent tasks. See score_vacancy_candidates for the concurrent
+# orchestration, and _job_relevances_for below for the simple sequential
+# version single-candidate scoring still uses.
+
+async def _job_relevance_state(
     db: AsyncSession, candidate, vacancy, force_refresh: bool = False
-) -> dict[int, dict]:
-    """Per-job relevance judgements for this candidate against this vacancy.
-
-    Cached in candidate_job_relevance: the (paid) judgement call runs once per
-    candidate per vacancy, so re-scoring after a weight change is free. Pass
-    force_refresh=True to re-judge, e.g. after editing the vacancy's
-    responsibilities.
-
-    On failure, returns {} - the engine then counts every job at full relevance
-    rather than silently erasing the candidate's experience.
-    """
+) -> tuple[dict[int, dict], list[dict] | None]:
+    """(cached_relevances, jobs_needing_judgement). The second element is
+    None when nothing needs judging - cached_relevances is already complete."""
     jobs = (candidate.structured_data or {}).get("work_history") or []
     if not jobs:
-        return {}
+        return {}, None
 
     if force_refresh:
         await db.execute(
@@ -46,36 +49,44 @@ async def _job_relevances_for(
                 CandidateJobRelevance.vacancy_id == vacancy.id,
             )
         )
-    else:
-        cached = (
-            await db.execute(
-                select(CandidateJobRelevance).where(
-                    CandidateJobRelevance.candidate_id == candidate.id,
-                    CandidateJobRelevance.vacancy_id == vacancy.id,
-                )
-            )
-        ).scalars().all()
-        if len(cached) == len(jobs):
-            return {row.job_index: {"relevance": row.relevance, "reason": row.reason or ""} for row in cached}
-        # Partial/stale cache (e.g. the CV was re-parsed and now has a different
-        # number of jobs) - drop it and re-judge rather than mixing generations.
-        if cached:
-            await db.execute(
-                delete(CandidateJobRelevance).where(
-                    CandidateJobRelevance.candidate_id == candidate.id,
-                    CandidateJobRelevance.vacancy_id == vacancy.id,
-                )
-            )
+        return {}, jobs
 
+    cached = (
+        await db.execute(
+            select(CandidateJobRelevance).where(
+                CandidateJobRelevance.candidate_id == candidate.id,
+                CandidateJobRelevance.vacancy_id == vacancy.id,
+            )
+        )
+    ).scalars().all()
+    if len(cached) == len(jobs):
+        return {row.job_index: {"relevance": row.relevance, "reason": row.reason or ""} for row in cached}, None
+    # Partial/stale cache (e.g. the CV was re-parsed and now has a different
+    # number of jobs) - drop it and re-judge rather than mixing generations.
+    if cached:
+        await db.execute(
+            delete(CandidateJobRelevance).where(
+                CandidateJobRelevance.candidate_id == candidate.id,
+                CandidateJobRelevance.vacancy_id == vacancy.id,
+            )
+        )
+    return {}, jobs
+
+
+def _run_job_judgement(jobs: list[dict], vacancy_title: str, vacancy_responsibilities: str) -> dict[int, dict]:
+    """Pure wrapper around judge_job_relevance - no DB access, safe to run
+    concurrently in a worker thread. Empty dict on failure, same fallback
+    semantics as before: the engine then counts every job at full relevance
+    rather than silently erasing the candidate's experience."""
     try:
-        judgements = judge_job_relevance(
-            jobs,
-            vacancy_title=vacancy.title,
-            vacancy_responsibilities=vacancy.responsibilities or vacancy.description,
+        return judge_job_relevance(
+            jobs, vacancy_title=vacancy_title, vacancy_responsibilities=vacancy_responsibilities
         )
     except RelevanceJudgementError:
         return {}
 
+
+async def _store_job_relevance(db: AsyncSession, candidate, vacancy, judgements: dict[int, dict]) -> None:
     for job_index, judgement in judgements.items():
         db.add(
             CandidateJobRelevance(
@@ -87,6 +98,31 @@ async def _job_relevances_for(
             )
         )
     await db.flush()
+
+
+async def _job_relevances_for(
+    db: AsyncSession, candidate, vacancy, force_refresh: bool = False
+) -> dict[int, dict]:
+    """Per-job relevance judgements for this candidate against this vacancy -
+    the simple sequential path used by single-candidate scoring (bulk scoring
+    uses _job_relevance_state/_run_job_judgement/_store_job_relevance directly
+    so it can batch the AI calls concurrently across candidates).
+
+    Cached in candidate_job_relevance: the (paid) judgement call runs once per
+    candidate per vacancy, so re-scoring after a weight change is free. Pass
+    force_refresh=True to re-judge, e.g. after editing the vacancy's
+    responsibilities. The AI call itself runs in a worker thread
+    (anyio.to_thread) so it doesn't block the event loop for other requests
+    while it's in flight.
+    """
+    cached, jobs = await _job_relevance_state(db, candidate, vacancy, force_refresh)
+    if jobs is None:
+        return cached
+
+    judgements = await anyio.to_thread.run_sync(
+        _run_job_judgement, jobs, vacancy.title, vacancy.responsibilities or vacancy.description
+    )
+    await _store_job_relevance(db, candidate, vacancy, judgements)
     return judgements
 
 
@@ -117,28 +153,17 @@ def _failed_hard_requirements(vacancy, structured: dict) -> list[str]:
     return failed
 
 
-async def _skill_relevances_for(
+# Same split as job relevance above, for the same reason.
+
+async def _skill_relevance_state(
     db: AsyncSession, candidate, vacancy, force_refresh: bool = False
-) -> dict[str, dict]:
-    """Semantic-fallback judgements for this candidate's requirements that
-    failed literal token matching (see skill_matcher.apply_semantic_fallback
-    and skill_relevance_judge.py).
-
-    Cached in candidate_skill_relevance, keyed by a hash of the requirement
-    text: the (paid) judgement call runs once per candidate per vacancy per
-    requirement, so re-scoring after a weight change is free. Requirements
-    that already match literally never reach here at all - this only ever
-    judges the ones the free check couldn't confirm.
-
-    On failure (or for any requirement the judge call didn't rate), that
-    requirement is simply left out of the returned dict - the engine then
-    leaves it exactly as the literal matcher scored it (still "missing"),
-    same as if this fallback didn't exist.
-    """
+) -> tuple[dict[str, dict], list[str] | None]:
+    """(cached_judgements, requirements_needing_judgement). The second
+    element is None when nothing needs judging."""
     structured = candidate.structured_data or {}
     failed = _failed_hard_requirements(vacancy, structured)
     if not failed:
-        return {}
+        return {}, None
 
     hashes = {hash_requirement(r): r for r in failed}
 
@@ -150,30 +175,33 @@ async def _skill_relevances_for(
                 CandidateSkillRelevance.requirement_hash.in_(hashes.keys()),
             )
         )
-        result: dict[str, dict] = {}
-        to_judge = failed
-    else:
-        cached = (
-            await db.execute(
-                select(CandidateSkillRelevance).where(
-                    CandidateSkillRelevance.candidate_id == candidate.id,
-                    CandidateSkillRelevance.vacancy_id == vacancy.id,
-                    CandidateSkillRelevance.requirement_hash.in_(hashes.keys()),
-                )
+        return {}, failed
+
+    cached = (
+        await db.execute(
+            select(CandidateSkillRelevance).where(
+                CandidateSkillRelevance.candidate_id == candidate.id,
+                CandidateSkillRelevance.vacancy_id == vacancy.id,
+                CandidateSkillRelevance.requirement_hash.in_(hashes.keys()),
             )
-        ).scalars().all()
-        result = {row.requirement: {"matched": row.matched, "reason": row.reason or ""} for row in cached}
-        cached_hashes = {hash_requirement(r) for r in result}
-        to_judge = [hashes[h] for h in hashes if h not in cached_hashes]
+        )
+    ).scalars().all()
+    result = {row.requirement: {"matched": row.matched, "reason": row.reason or ""} for row in cached}
+    cached_hashes = {hash_requirement(r) for r in result}
+    to_judge = [hashes[h] for h in hashes if h not in cached_hashes]
+    return result, (to_judge or None)
 
-    if not to_judge:
-        return result
 
+def _run_skill_judgement(requirements: list[str], resume_text: str) -> dict[str, dict]:
+    """Pure wrapper around judge_skill_relevance - no DB access, safe to run
+    concurrently in a worker thread."""
     try:
-        judgements = judge_skill_relevance(to_judge, corpus_text(structured))
+        return judge_skill_relevance(requirements, resume_text)
     except SkillRelevanceError:
-        return result
+        return {}
 
+
+async def _store_skill_relevance(db: AsyncSession, candidate, vacancy, judgements: dict[str, dict]) -> None:
     for requirement, judgement in judgements.items():
         db.add(
             CandidateSkillRelevance(
@@ -185,9 +213,39 @@ async def _skill_relevances_for(
                 reason=judgement.get("reason"),
             )
         )
-        result[requirement] = judgement
     await db.flush()
-    return result
+
+
+async def _skill_relevances_for(
+    db: AsyncSession, candidate, vacancy, force_refresh: bool = False
+) -> dict[str, dict]:
+    """Semantic-fallback judgements for this candidate's requirements that
+    failed literal token matching - the simple sequential path used by
+    single-candidate scoring (bulk scoring uses _skill_relevance_state/
+    _run_skill_judgement/_store_skill_relevance directly so it can batch the
+    AI calls concurrently across candidates). See skill_matcher.
+    apply_semantic_fallback and skill_relevance_judge.py.
+
+    Cached in candidate_skill_relevance, keyed by a hash of the requirement
+    text: the (paid) judgement call runs once per candidate per vacancy per
+    requirement, so re-scoring after a weight change is free. Requirements
+    that already match literally never reach here at all. On failure (or for
+    any requirement the judge call didn't rate), that requirement is simply
+    left out of the returned dict - the engine leaves it exactly as the
+    literal matcher scored it (still "missing"), same as if this fallback
+    didn't exist. The AI call runs in a worker thread (anyio.to_thread) so it
+    doesn't block the event loop for other requests while in flight.
+    """
+    cached, to_judge = await _skill_relevance_state(db, candidate, vacancy, force_refresh)
+    if to_judge is None:
+        return cached
+
+    judgements = await anyio.to_thread.run_sync(
+        _run_skill_judgement, to_judge, corpus_text(candidate.structured_data or {})
+    )
+    await _store_skill_relevance(db, candidate, vacancy, judgements)
+    cached.update(judgements)
+    return cached
 
 
 @router.post("/vacancies/{vacancy_id}/score", response_model=ScoringRunResult)
@@ -204,6 +262,16 @@ async def score_vacancy_candidates(
     vacancy's scoring_weights (or editing its requirements), call this again
     to see the new ranking. Nothing is re-parsed or re-embedded - it reuses
     the stored structured data and vectors, so it's cheap to re-run.
+
+    CONCURRENCY: the two AI judgement calls (job relevance, skill semantic
+    fallback) are the slow part - one blocking network call each, per
+    candidate, when not already cached. These now run concurrently across
+    candidates, bounded by MAX_CONCURRENT_SCORING_CALLS worker threads,
+    instead of one candidate at a time - the same "gather the slow work
+    concurrently, then write to the DB in a fast sequential pass" pattern
+    parse_and_store_many uses for uploads, and for the same reason: a single
+    AsyncSession isn't safe to use from multiple concurrent tasks, so only
+    the AI calls (no DB access) run inside the bounded/concurrent part.
     """
     vacancy = await db.get(Vacancy, vacancy_id)
     if vacancy is None:
@@ -217,12 +285,57 @@ async def score_vacancy_candidates(
     # current score, and stale rows from an earlier weighting would be misleading.
     await db.execute(delete(Match).where(Match.vacancy_id == vacancy_id))
 
+    # Phase 1: figure out what's already cached vs. what needs judging - fast,
+    # DB-only, sequential (a handful of indexed SELECTs per candidate).
+    job_states = [await _job_relevance_state(db, candidate, vacancy) for candidate in candidates]
+    skill_states = [await _skill_relevance_state(db, candidate, vacancy) for candidate in candidates]
+
+    # Phase 2: run the actual (slow, blocking) AI calls concurrently, bounded.
+    # No DB access happens in here - see the docstring above.
+    semaphore = anyio.Semaphore(settings.MAX_CONCURRENT_SCORING_CALLS)
+
+    async def _resolve_job(cached: dict, jobs: list[dict] | None) -> dict:
+        if jobs is None:
+            return cached
+        async with semaphore:
+            return await anyio.to_thread.run_sync(
+                _run_job_judgement, jobs, vacancy.title, vacancy.responsibilities or vacancy.description
+            )
+
+    async def _resolve_skill(candidate, cached: dict, to_judge: list[str] | None) -> dict:
+        if to_judge is None:
+            return cached
+        async with semaphore:
+            judgements = await anyio.to_thread.run_sync(
+                _run_skill_judgement, to_judge, corpus_text(candidate.structured_data or {})
+            )
+        return {**cached, **judgements}
+
+    job_relevances_list, skill_relevances_list = await asyncio.gather(
+        asyncio.gather(*(_resolve_job(cached, jobs) for cached, jobs in job_states)),
+        asyncio.gather(
+            *(
+                _resolve_skill(candidate, cached, to_judge)
+                for candidate, (cached, to_judge) in zip(candidates, skill_states)
+            )
+        ),
+    )
+
+    # Phase 3: write freshly-judged results to the cache tables and compute
+    # scores - fast, sequential, the only part touching the DB again.
     scored = 0
     skipped_reasons: list[str] = []
 
-    for candidate in candidates:
-        job_relevances = await _job_relevances_for(db, candidate, vacancy)
-        skill_relevances = await _skill_relevances_for(db, candidate, vacancy)
+    for candidate, (_, jobs), job_relevances, (_, to_judge), skill_relevances in zip(
+        candidates, job_states, job_relevances_list, skill_states, skill_relevances_list
+    ):
+        if jobs is not None:
+            await _store_job_relevance(db, candidate, vacancy, job_relevances)
+        if to_judge is not None:
+            await _store_skill_relevance(
+                db, candidate, vacancy, {k: v for k, v in skill_relevances.items() if k in to_judge}
+            )
+
         result = score_candidate(
             candidate, vacancy, job_relevances=job_relevances, skill_relevances=skill_relevances
         )

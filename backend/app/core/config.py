@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # a time. Raise if the Anthropic/Voyage rate limits on your account allow
     # more headroom; lower if you see 429s during large batch uploads.
     MAX_CONCURRENT_PARSES: int = 8
+    # Same idea for scoring: POST /vacancies/{id}/score runs each candidate's
+    # (blocking) job-relevance and skill-relevance judgement calls concurrently,
+    # bounded by this semaphore, instead of one candidate at a time - see
+    # score_vacancy_candidates in api/routes/matching.py.
+    MAX_CONCURRENT_SCORING_CALLS: int = 8
 
     # --- File storage (used from Phase 2 onward) ---
     RESUME_STORAGE_DIR: str = "./storage/resumes"
