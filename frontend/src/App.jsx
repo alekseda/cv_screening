@@ -312,6 +312,7 @@ function EditVacancy({ vacancy, onCancel, onSaved }) {
   const [wageMin, setWageMin] = useState(vacancy.wage_min ?? "");
   const [wageMax, setWageMax] = useState(vacancy.wage_max ?? "");
   const [wageCurrency, setWageCurrency] = useState(vacancy.wage_currency || "AZN");
+  const [glorriJobId, setGlorriJobId] = useState(vacancy.glorri_job_id || "");
   const [weights, setWeights] = useState({ ...vacancy.scoring_weights });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -346,6 +347,7 @@ function EditVacancy({ vacancy, onCancel, onSaved }) {
         wage_min: wageMin === "" ? null : Number(wageMin),
         wage_max: wageMax === "" ? null : Number(wageMax),
         wage_currency: wageCurrency,
+        glorri_job_id: glorriJobId.trim() || null,
         scoring_weights: Object.fromEntries(
           WEIGHT_FIELDS.map(([key]) => [key, Number(weights[key]) || 0])
         ),
@@ -459,6 +461,20 @@ function EditVacancy({ vacancy, onCancel, onSaved }) {
           </div>
 
           <div className="field">
+            <label>Glorri.az job ID</label>
+            <div className="hint">
+              Links this vacancy to a job posting in Glorri, so "Sync from Glorri" on the vacancy
+              page knows which job's applicants to pull. Find it in Glorri's own job export/URL.
+            </div>
+            <input
+              type="text"
+              value={glorriJobId}
+              onChange={(e) => setGlorriJobId(e.target.value)}
+              placeholder="e.g. job-id-123"
+            />
+          </div>
+
+          <div className="field">
             <label>Scoring weights</label>
             <div className="hint">
               How much each component contributes to the total score. Must sum to 1.00 —
@@ -508,6 +524,8 @@ function VacancyDetail({ vacancyId, onBack }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [rescoring, setRescoring] = useState(false);
+  const [syncingGlorri, setSyncingGlorri] = useState(false);
+  const [glorriNote, setGlorriNote] = useState("");
 
   const loadVacancy = useCallback(() => {
     api.getVacancy(vacancyId).then(setVacancy).catch((e) => setError(e.message));
@@ -580,6 +598,31 @@ function VacancyDetail({ vacancyId, onBack }) {
     }
   }
 
+  async function handleSyncGlorri() {
+    setError("");
+    setGlorriNote("");
+    setSyncingGlorri(true);
+    try {
+      const res = await api.syncGlorri(vacancyId);
+      const parts = [`${res.imported} imported`];
+      if (res.skipped_duplicate) parts.push(`${res.skipped_duplicate} already imported`);
+      if (res.skipped_blacklisted) parts.push(`${res.skipped_blacklisted} blacklisted`);
+      if (res.skipped_no_resume.length) parts.push(`${res.skipped_no_resume.length} with no résumé file`);
+      if (res.failed.length) parts.push(`${res.failed.length} failed to download`);
+      setGlorriNote(`Glorri sync: ${parts.join(", ")}.`);
+      if (res.imported > 0) {
+        await api.scoreVacancy(vacancyId);
+        refreshAll();
+      } else {
+        loadCandidates();
+      }
+    } catch (err) {
+      setError(err.message || "Could not sync from Glorri");
+    } finally {
+      setSyncingGlorri(false);
+    }
+  }
+
   async function handleDeleteVacancy() {
     if (!vacancy) return;
     if (!window.confirm(`Delete "${vacancy.title}"? All of its candidates and scores will be removed too. This cannot be undone.`)) return;
@@ -610,6 +653,7 @@ function VacancyDetail({ vacancyId, onBack }) {
     <>
       <button className="back-link" onClick={onBack}>← All vacancies</button>
       {error && <div className="banner banner-error">{error}</div>}
+      {glorriNote && <div className="banner banner-info">{glorriNote}</div>}
 
       <div className="toolbar">
         <div>
@@ -621,6 +665,11 @@ function VacancyDetail({ vacancyId, onBack }) {
             <button className="btn btn-primary" onClick={handleRescore} disabled={rescoring}>
               {rescoring ? <span className="spinner" /> : "Recompute scores"}
             </button>
+            {vacancy.glorri_job_id && (
+              <button className="btn btn-ghost" onClick={handleSyncGlorri} disabled={syncingGlorri}>
+                {syncingGlorri ? <span className="spinner dark" /> : "Sync from Glorri"}
+              </button>
+            )}
             <button className="btn btn-ghost" onClick={() => setEditing(true)}>Edit vacancy</button>
             <button className="btn btn-ghost btn-danger" onClick={handleDeleteVacancy} disabled={deleting}>
               {deleting ? <span className="spinner dark" /> : "Delete vacancy"}

@@ -105,6 +105,13 @@ class Vacancy(Base):
     # defaults and should be filled in by hand via PATCH.
     extraction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Links this vacancy to a job posting in Glorri.az (its `job.id` from the
+    # export - see services/integrations/glorri_client.py), so
+    # POST /vacancies/{id}/sync-glorri knows which job's applicants to pull.
+    # Set manually via PATCH; null means syncing isn't configured for this
+    # vacancy yet.
+    glorri_job_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

@@ -171,3 +171,11 @@ export async function reparseFailed(vacancyId) {
   });
   return handle(res);
 }
+
+export async function syncGlorri(vacancyId) {
+  const res = await fetch(`${BASE}/vacancies/${vacancyId}/sync-glorri`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return handle(res);
+}

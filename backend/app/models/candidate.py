@@ -36,6 +36,13 @@ class Candidate(Base):
     # candidate applies to.
     file_hash: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
 
+    # This candidate's id in Glorri.az, set only when imported via
+    # POST /vacancies/{id}/sync-glorri (see services/integrations/glorri_client.py).
+    # Null for a manually-uploaded candidate. Indexed so a re-sync can check
+    # "have we already imported this Glorri applicant for this vacancy?"
+    # without re-creating duplicates.
+    glorri_candidate_id: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+
     raw_text: Mapped[str] = mapped_column(Text, nullable=True)  # extracted before AI structuring
     structured_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # see schemas/resume.py for shape
 

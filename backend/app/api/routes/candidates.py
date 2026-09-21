@@ -3,6 +3,7 @@ import json
 import os
 import uuid
 
+import anyio
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,8 +19,10 @@ from app.schemas.candidate import (
     CandidateSummary,
     CandidateUploadResult,
     CandidateWageUpdate,
+    GlorriSyncResult,
     ReparseFailedResult,
 )
+from app.services.integrations.glorri_client import GlorriError, download_export, download_resume, start_export
 from app.services.parsing.ai_structurer import ResumeStructuringError
 from app.services.parsing.pipeline import (
     apply_cached_parse,
@@ -202,6 +205,167 @@ async def upload_candidates(
             )
 
     return results
+
+
+@router.post("/vacancies/{vacancy_id}/sync-glorri", response_model=GlorriSyncResult)
+async def sync_glorri_applicants(
+    vacancy_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Pulls this vacancy's fresh applicants from Glorri.az and runs them
+    through the same upload/parse pipeline as a manual file upload.
+
+    Only Glorri's APPLIED stage is imported - candidates already moved to
+    SHORTLISTED/LEFT/etc. in Glorri have already been triaged there, not
+    what a fresh sync is for. Company-wide blacklisted candidates (by email)
+    are always excluded. Re-running this is safe: candidates already
+    imported in a previous sync (matched by Glorri's own candidate id) are
+    skipped, not duplicated. A candidate with no resumeUrl can't be parsed
+    and is reported rather than imported.
+
+    Requires `Vacancy.glorri_job_id` to be set first (PATCH the vacancy).
+    """
+    vacancy = await db.get(Vacancy, vacancy_id)
+    if vacancy is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Vacancy not found")
+    if not vacancy.glorri_job_id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "This vacancy has no glorri_job_id set - PATCH the vacancy with one before syncing",
+        )
+
+    try:
+        export_meta = await anyio.to_thread.run_sync(start_export)
+        export_data = await anyio.to_thread.run_sync(download_export, export_meta["downloadUrl"])
+    except GlorriError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Glorri sync failed: {e}") from e
+
+    job = next(
+        (j for j in export_data.get("jobs") or [] if j.get("id") == vacancy.glorri_job_id),
+        None,
+    )
+    if job is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"No job with id {vacancy.glorri_job_id!r} found in the current Glorri export - "
+            "check the vacancy's glorri_job_id",
+        )
+
+    blacklisted_emails = {
+        email.strip().lower()
+        for entry in (export_data.get("blacklistCandidates") or [])
+        for email in (entry.get("emails") or [])
+        if email
+    }
+
+    applied_candidates = [
+        gc
+        for stage in job.get("stages") or []
+        if stage.get("name") == "APPLIED"
+        for gc in stage.get("candidates") or []
+    ]
+
+    already_imported = {
+        row[0]
+        for row in (
+            await db.execute(
+                select(Candidate.glorri_candidate_id).where(
+                    Candidate.vacancy_id == vacancy_id,
+                    Candidate.glorri_candidate_id.isnot(None),
+                )
+            )
+        ).all()
+    }
+
+    skipped_duplicate = 0
+    skipped_blacklisted = 0
+    skipped_no_resume: list[str] = []
+    failed: list[dict] = []
+    to_process: list[Candidate] = []
+    imported_via_cache = 0
+
+    for gc in applied_candidates:
+        glorri_id = gc.get("id")
+        name_parts = gc.get("name") or {}
+        display_name = f"{name_parts.get('first', '')} {name_parts.get('last', '')}".strip() or glorri_id or "unknown"
+
+        if glorri_id and glorri_id in already_imported:
+            skipped_duplicate += 1
+            continue
+
+        email = (gc.get("email") or "").strip().lower()
+        if email and email in blacklisted_emails:
+            skipped_blacklisted += 1
+            continue
+
+        resume_url = gc.get("resumeUrl")
+        if not resume_url:
+            skipped_no_resume.append(display_name)
+            continue
+
+        try:
+            content, filename = await anyio.to_thread.run_sync(download_resume, resume_url)
+        except GlorriError as e:
+            failed.append({"name": display_name, "error": str(e)})
+            continue
+
+        ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+        if ext not in ALLOWED_EXTENSIONS:
+            failed.append({"name": display_name, "error": f"Unsupported resume file type: {filename}"})
+            continue
+        if len(content) > MAX_FILE_SIZE_BYTES:
+            failed.append({"name": display_name, "error": "Resume file exceeds the size limit"})
+            continue
+
+        file_hash = hashlib.sha256(content).hexdigest()
+        candidate = Candidate(
+            vacancy_id=vacancy_id,
+            original_filename=filename,
+            file_path="",
+            file_hash=file_hash,
+            parsing_status="pending",
+            glorri_candidate_id=glorri_id,
+        )
+        db.add(candidate)
+        await db.flush()
+
+        candidate.file_path = save_upload_file(vacancy_id, candidate.id, filename, content)
+        await db.commit()
+        await db.refresh(candidate)
+
+        # Same content-hash reuse as a manual upload - see upload_candidates.
+        cached_source = (
+            await db.execute(
+                select(Candidate)
+                .where(
+                    Candidate.file_hash == file_hash,
+                    Candidate.parsing_status == "success",
+                    Candidate.id != candidate.id,
+                )
+                .order_by(Candidate.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        if cached_source is not None:
+            apply_cached_parse(candidate, cached_source)
+            await db.commit()
+            imported_via_cache += 1
+            continue
+
+        to_process.append(candidate)
+
+    if to_process:
+        await parse_and_store_many(db, to_process)
+
+    return GlorriSyncResult(
+        imported=imported_via_cache + len(to_process),
+        skipped_duplicate=skipped_duplicate,
+        skipped_blacklisted=skipped_blacklisted,
+        skipped_no_resume=skipped_no_resume,
+        failed=failed,
+    )
 
 
 @router.get("/vacancies/{vacancy_id}/candidates", response_model=list[CandidateSummary])

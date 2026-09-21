@@ -73,6 +73,18 @@ class CandidateWageUpdate(BaseModel):
     wage_currency: str | None = Field(default="AZN", max_length=10)
 
 
+class GlorriSyncResult(BaseModel):
+    """Outcome of POST /vacancies/{id}/sync-glorri - pulling this vacancy's
+    APPLIED-stage applicants from Glorri.az and running them through the
+    normal upload/parse pipeline."""
+
+    imported: int
+    skipped_duplicate: int  # already imported in a previous sync
+    skipped_blacklisted: int  # on Glorri's company-wide blacklist by email
+    skipped_no_resume: list[str]  # applicant names with no resumeUrl to parse
+    failed: list[dict]  # [{"name": ..., "error": ...}] - download/type/size failures
+
+
 class ReparseFailedResult(BaseModel):
     """Outcome of a bulk retry across every failed candidate in a vacancy.
 

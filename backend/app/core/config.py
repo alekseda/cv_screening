@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "voyage-multilingual-2"
     EMBEDDING_DIM: int = 1024  # voyage-multilingual-2 output dimension
 
+    # --- Glorri.az integration (candidate import) ---
+    # Static bearer token issued by Glorri for this company's integration -
+    # see services/integrations/glorri_client.py. No per-request auth flow;
+    # the same token is sent on every call.
+    GLORRI_API_BASE_URL: str = "https://api.glorri.com"
+    GLORRI_API_TOKEN: str | None = None
+
     # --- Resume parsing (Phase 2) ---
     OCR_LANGUAGES: str = "aze+rus+eng"  # Tesseract language codes
     MAX_RESUME_TEXT_CHARS: int = 15000  # truncate before sending to the AI structurer

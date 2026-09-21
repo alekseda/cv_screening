@@ -126,6 +126,32 @@ didn't state one). Each row also has its own **Recompute** button, for
 re-scoring just that candidate (e.g. after entering their wage, or after a
 scoring-logic change) without re-running the whole vacancy.
 
+## Glorri.az integration (candidate import)
+
+Pulls a vacancy's fresh applicants directly from Glorri instead of a
+recruiter downloading résumés from Glorri and re-uploading them here by
+hand. One-directional (Glorri → this tool) and manually triggered - no
+webhook or scheduled polling.
+
+- Set `GLORRI_API_TOKEN` in `.env` (static bearer token from Glorri).
+- On a vacancy, set **Glorri.az job ID** (via Edit vacancy) to that job's
+  `id` from Glorri, then use **Sync from Glorri** on the vacancy page (or
+  `POST /vacancies/{id}/sync-glorri`).
+- Only Glorri's `APPLIED` stage is imported - candidates already moved to
+  `SHORTLISTED`/`LEFT`/etc. in Glorri have already been triaged there.
+  Company-wide blacklisted candidates (by email) are always excluded.
+- Each imported résumé goes through the exact same pipeline as a manual
+  upload (content-hash reuse, AI structuring, embedding). Candidates with
+  no `resumeUrl` in Glorri can't be parsed and are reported, not imported.
+- Safe to re-run: candidates already imported in a previous sync (matched
+  by Glorri's own candidate id, stored on `Candidate.glorri_candidate_id`)
+  are skipped, never duplicated.
+
+See `app/services/integrations/glorri_client.py` for the Glorri API details
+(export-then-poll-then-download; Glorri has no per-job "new applicants"
+endpoint, only a company-wide export) and `sync_glorri_applicants` in
+`api/routes/candidates.py` for the import/filtering logic.
+
 ## Try it via curl
 
 ```bash
@@ -188,6 +214,7 @@ backend/
       parsing/                # text_extraction, ai_structurer, canonicalizer,
                                #   jd_structurer, experience_calculator, pipeline
       embeddings/              # voyage_client, text_builders
+      integrations/            # glorri_client - candidate import from Glorri.az
       scoring/                 # engine (combines everything below into one score)
         skill_matcher.py       #   literal token matching (the auditable first pass)
         skill_relevance_judge.py  # semantic fallback for what the token pass misses

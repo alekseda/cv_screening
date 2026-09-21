@@ -68,6 +68,7 @@ class VacancyCreate(BaseModel):
     wage_max: float | None = None
     wage_currency: str = "AZN"
     scoring_weights: ScoringWeights | None = None  # None -> DEFAULT_SCORING_WEIGHTS is used
+    glorri_job_id: str | None = None  # links to a Glorri.az job for POST /vacancies/{id}/sync-glorri
 
 
 class VacancyUpdate(BaseModel):
@@ -85,6 +86,7 @@ class VacancyUpdate(BaseModel):
     wage_max: float | None = None
     wage_currency: str | None = None
     scoring_weights: ScoringWeights | None = None
+    glorri_job_id: str | None = None
 
 
 class VacancyRead(BaseModel):
@@ -113,6 +115,7 @@ class VacancyRead(BaseModel):
     scoring_weights: dict
     embedding_error: str | None  # None + has embedding = ready for semantic matching
     extraction_error: str | None  # set if JD auto-extraction failed - check fields before trusting them
+    glorri_job_id: str | None  # links to a Glorri.az job for POST /vacancies/{id}/sync-glorri
     created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime
