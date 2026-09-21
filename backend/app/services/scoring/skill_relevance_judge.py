@@ -92,6 +92,13 @@ tangential connection is NOT a match. If the requirement isn't really there, say
 anywhere in the resume content given.
 - Plural/singular forms, synonyms, and cross-language wording differences (Azerbaijani/Russian/English) are NOT \
 reasons to say no - judge the substance, not the exact words.
+- Exception - MS Excel requirements specifically: if the resume shows genuine, real Excel use (reports, \
+spreadsheets, data/database processing, tracking, calculations), that's enough evidence for baseline features \
+like pivot tables and basic formulas too - these are standard skills almost anyone who actually uses Excel for \
+this kind of work has picked up, and CVs describe what the work was for, not which menu commands were used. Only \
+say no for these if Excel itself isn't genuinely demonstrated, or the resume's own words make clear the use was \
+extremely minimal (e.g. just data entry). Keep every other tool (SQL, Power BI, Tableau, programming languages, \
+etc.) to the strict standard above - this exception is for Excel's own baseline features only.
 - Always respond by calling the rate_skill_relevance tool, with exactly one rating per requirement listed."""
 
 
