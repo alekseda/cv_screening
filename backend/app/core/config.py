@@ -26,11 +26,17 @@ class Settings(BaseSettings):
 
     # --- External AI providers ---
     ANTHROPIC_API_KEY: str | None = None
-    # ANTHROPIC_MODEL remains the high-accuracy tier: used for job-relevance
-    # judgement (relevance_judge.py), which the code's own analysis found
-    # needs real language-understanding, not a cost-cut - see that module's
-    # docstring for why cosine similarity was tried and rejected there.
-    ANTHROPIC_MODEL: str = "claude-opus-4-8"
+    # ANTHROPIC_MODEL is the high-accuracy tier: used for job-relevance
+    # judgement (relevance_judge.py) and the skill semantic fallback
+    # (skill_relevance_judge.py), which the code's own analysis found need
+    # real language-understanding, not a cost-cut - see those modules'
+    # docstrings for why cosine similarity was tried and rejected there.
+    # Was Opus; moved to Sonnet after a side-by-side comparison on real
+    # candidates (see git history) found Sonnet's judgements close enough -
+    # sometimes stricter in ways that looked more correct, not less - at a
+    # fraction of the cost. Revisit ANTHROPIC_MODEL_STRUCTURING_DEFAULT's
+    # escalation target too if this changes again.
+    ANTHROPIC_MODEL: str = "claude-sonnet-5"
     # Resume STRUCTURING (ai_structurer.py) is a more mechanical extraction
     # task than relevance judgement, so it runs on a cheaper default model
     # first, with automatic escalation to ANTHROPIC_MODEL only when the
