@@ -138,22 +138,28 @@ def is_degree_completed(entry: dict, today_year: int | None = None) -> bool:
 
 
 def find_degree_graduation_year(structured: dict, target_level: str) -> int | None:
-    """Finds the graduation year of a *specific* degree level from the raw
-    education array.
+    """Finds the graduation year of a *specific*, COMPLETED degree level from
+    the raw education array.
 
     This exists because `highest_completed_degree_graduation_year` answers a
     different question: someone with a 2020 bachelor's and a 2023 master's
     reports 2023, which is useless for checking "did they finish their
     bachelor's in 2024/2025". So we look up the matching entry directly.
+
+    Uses degree_text_to_level (the same AZ/RU/EN alias table as everywhere
+    else in this module) rather than a raw substring match against the
+    entry's own degree text - a bachelor's entry literally reading "Bakalavr"
+    or "бакалавр" never contains the substring "bachelor", so the naive
+    version silently failed to find a degree that plainly is one.
     """
-    target = normalize(target_level)
     best_year: int | None = None
 
     for entry in structured.get("education") or []:
         if not isinstance(entry, dict):
             continue
-        degree = normalize(entry.get("degree") or "")
-        if not degree or target not in degree:
+        if degree_text_to_level(entry.get("degree") or "") != target_level:
+            continue
+        if not is_degree_completed(entry):
             continue
 
         end_date = entry.get("end_date")
@@ -233,18 +239,28 @@ def check_education(structured: dict, candidate_fields: dict, vacancy) -> dict:
             )
             return result
 
-        # Path 2: already completed exactly that level, within the window.
-        if candidate_level == requirement:
-            grad_year = find_degree_graduation_year(structured, requirement)
-            if grad_year is None:
-                grad_year = candidate_fields.get("highest_completed_degree_graduation_year")
-            result["candidate_degree_graduation_year"] = grad_year
+        # Path 2: holds a COMPLETED degree at exactly the required level,
+        # within the window - checked against the specific education entries,
+        # not just the candidate's overall/current highest level. This matters
+        # because someone who finished their bachelor's in-window and has
+        # SINCE started a master's still education_level="master" overall -
+        # they're a genuine 2024/2025 bachelor's graduate regardless of what
+        # they've moved on to, and shouldn't be read as merely "holds a
+        # higher degree" (that rejection, below, is for someone with NO
+        # qualifying-level degree at all - an unrelated advanced degree from
+        # years ago, nothing at the target level).
+        grad_year = find_degree_graduation_year(structured, requirement)
+        if grad_year is None and candidate_level == requirement:
+            # No matching entry found in the raw education array (or its
+            # dates weren't parseable), but the AI's own overall-level summary
+            # agrees - fall back to that rather than failing someone whose
+            # education section just didn't structure cleanly.
+            grad_year = candidate_fields.get("highest_completed_degree_graduation_year")
 
+        if grad_year is not None:
+            result["candidate_degree_graduation_year"] = grad_year
             if _in_window(grad_year):
-                result.update(
-                    passed=True,
-                    reason=f"Completed {requirement}" + (f" in {grad_year}" if grad_year else ""),
-                )
+                result.update(passed=True, reason=f"Completed {requirement} in {grad_year}")
             else:
                 result.update(
                     passed=False,
@@ -255,9 +271,11 @@ def check_education(structured: dict, candidate_fields: dict, vacancy) -> dict:
                 )
             return result
 
-        # Deliberately no "higher degree satisfies it" fallback here: this
-        # posting wants a current student or fresh graduate at this level,
-        # and someone with an unrelated higher degree from years ago isn't that.
+        # Deliberately no "higher degree satisfies it" fallback beyond the
+        # checks above: this posting wants a current student or recent
+        # graduate AT the required level (whether or not that's still their
+        # current focus), and someone with no qualifying-level degree at
+        # all - just an unrelated higher one - isn't that.
         if _rank(candidate_level) > _rank(requirement):
             result.update(
                 passed=False,

@@ -37,7 +37,7 @@ from app.models.candidate_job_embedding import CandidateJobEmbedding
 from app.services.embeddings.text_builders import build_candidate_embedding_text
 from app.services.embeddings.voyage_client import EmbeddingError, embed_text
 from app.services.parsing.ai_structurer import ResumeStructuringError, structure_resume
-from app.services.parsing.canonicalizer import canonicalize_or_fallback
+from app.services.parsing.canonicalizer import augment_sql_implies_statistics, canonicalize_or_fallback
 from app.services.parsing.experience_calculator import compute_total_experience
 from app.services.parsing.text_extraction import TextExtractionError, extract_text
 
@@ -97,7 +97,9 @@ def _structure_and_embed(raw_text: str) -> PipelineResult:
     # English canonical form of each skill, same order/count as skills - lets
     # the (rule-based) skill matcher bridge across languages. Best-effort:
     # falls back to the original skills list if canonicalization fails.
-    structured["skills_canonical"] = canonicalize_or_fallback(structured.get("skills") or [])
+    skills = structured.get("skills") or []
+    skills_canonical = canonicalize_or_fallback(skills)
+    structured["skills_canonical"] = augment_sql_implies_statistics(skills, skills_canonical)
 
     embedding: list[float] | None = None
     embedding_error: str | None = None

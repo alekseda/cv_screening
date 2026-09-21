@@ -125,6 +125,28 @@ def canonicalize_or_fallback(phrases: list[str]) -> list[str]:
         return list(phrases)
 
 
+def augment_sql_implies_statistics(skills: list[str], skills_canonical: list[str]) -> list[str]:
+    """If a candidate lists any SQL skill, appends a synthetic "SQL basic
+    statistics" entry to their canonical skills (unless already covered).
+
+    Some postings bundle a technology with a broader skill it inherently
+    demonstrates - e.g. "SQL üzrə əsas statistika bilikləri" ("basic
+    statistics knowledge via SQL"). Writing SQL aggregate queries (GROUP BY,
+    COUNT, AVG, SUM) IS basic statistics, but the rule-based token matcher
+    can't see that unless the resume happens to use the word "statistics"
+    literally - so a candidate who clearly knows SQL fails a bundled
+    requirement like that one for a wording gap, not a real skill gap. This
+    is deliberately narrow (SQL -> statistics only, not a general skill-
+    implication engine) - see the conversation that motivated it.
+    """
+    combined_lower = " ".join([*skills, *skills_canonical]).lower()
+    if "sql" not in combined_lower:
+        return skills_canonical
+    if any("statistic" in s.lower() for s in skills_canonical):
+        return skills_canonical  # already covered, don't duplicate
+    return [*skills_canonical, "SQL basic statistics"]
+
+
 CLASSIFY_CANONICALIZE_TOOL = {
     "name": "classify_and_canonicalize_phrases",
     "description": (
